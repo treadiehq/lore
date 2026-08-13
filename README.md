@@ -20,13 +20,16 @@ Connect Claude and Codex:
 ```sh
 lore connect \
   --url https://lore.example.com \
-  --token "your_workspace_token"
+  --token "your_workspace_token" \
+  --agent claude \
+  --agent codex
 
 lore doctor
 ```
 
-Now use your agents normally. Lore adds relevant knowledge automatically and
-shares clear human corrections across the workspace.
+The `--agent` flags are optional when Lore detects both clients. Then start
+Claude or Codex normally; Lore adds relevant knowledge automatically and shares
+clear human corrections across the workspace.
 
 ```text
 No, use AccountStore for account writes. RepositoryFactory is deprecated.
