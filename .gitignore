@@ -2,8 +2,6 @@
 node_modules/
 .pnpm-store/
 .npmrc
-.yarnrc
-.yarnrc.yml
 
 # Generated builds and test artifacts
 dist/
@@ -41,8 +39,6 @@ secrets.json
 *.log
 npm-debug.log*
 pnpm-debug.log*
-yarn-debug.log*
-yarn-error.log*
 .cursor/
 
 # Local databases
