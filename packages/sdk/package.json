@@ -1,0 +1,34 @@
+{
+  "name": "@lore-co/sdk",
+  "version": "0.1.0",
+  "description": "Typed HTTP client for Lore engineering memory",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "README.md"],
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "dev": "tsc -p tsconfig.json --watch --preserveWatchOutput",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --passWithNoTests",
+    "prepack": "pnpm run build"
+  },
+  "keywords": ["lore", "ai", "memory", "sdk"],
+  "license": "FSL-1.1-MIT",
+  "dependencies": {
+    "@lore-co/core": "workspace:*",
+    "zod": "^4.4.3"
+  }
+}

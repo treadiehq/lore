@@ -1,0 +1,45 @@
+{
+  "name": "@lore-co/core",
+  "version": "0.1.0",
+  "description": "Schemas and primitives for auditable Lore engineering memory",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./schemas": {
+      "types": "./dist/schemas.d.ts",
+      "import": "./dist/schemas.js"
+    },
+    "./pilot-schemas": {
+      "types": "./dist/pilot-schemas.d.ts",
+      "import": "./dist/pilot-schemas.js"
+    },
+    "./auth-schemas": {
+      "types": "./dist/auth-schemas.d.ts",
+      "import": "./dist/auth-schemas.js"
+    }
+  },
+  "files": ["dist", "README.md"],
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "dev": "tsc -p tsconfig.json --watch --preserveWatchOutput",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --passWithNoTests",
+    "prepack": "pnpm run build"
+  },
+  "keywords": ["lore", "ai", "memory", "schemas"],
+  "license": "FSL-1.1-MIT",
+  "dependencies": {
+    "zod": "^4.4.3"
+  }
+}

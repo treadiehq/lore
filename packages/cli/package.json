@@ -1,0 +1,48 @@
+{
+  "name": "@lore-co/cli",
+  "version": "0.1.0",
+  "description": "Connect Codex and Claude Code to Lore shared engineering memory",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "lore": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "dev": "tsx watch src/cli.ts",
+    "generate:assets": "node ../../scripts/generate-cli-assets.mjs",
+    "build": "pnpm run generate:assets && tsc -p tsconfig.json && chmod +x dist/cli.js",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "pnpm run build && vitest run",
+    "prepack": "pnpm run build"
+  },
+  "keywords": [
+    "lore",
+    "codex",
+    "claude",
+    "memory",
+    "ai"
+  ],
+  "license": "FSL-1.1-MIT",
+  "dependencies": {
+    "@lore-co/core": "workspace:*",
+    "@lore-co/sdk": "workspace:*",
+    "zod": "^4.4.3"
+  }
+}

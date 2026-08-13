@@ -1,0 +1,2 @@
+ALTER TABLE "connector_events" DROP CONSTRAINT "connector_events_type_check";--> statement-breakpoint
+ALTER TABLE "connector_events" ADD CONSTRAINT "connector_events_type_check" CHECK ("connector_events"."type" IN ('paired_turn', 'context_delivery'));

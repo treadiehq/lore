@@ -1,0 +1,61 @@
+{
+  "name": "lore",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.34.5",
+  "engines": {
+    "node": ">=22.0.0",
+    "pnpm": ">=10.34.5"
+  },
+  "scripts": {
+    "project:start": "bash scripts/project.sh start",
+    "project:stop": "bash scripts/project.sh stop",
+    "project:restart": "bash scripts/project.sh restart",
+    "project:status": "bash scripts/project.sh status",
+    "project:logs": "bash scripts/project.sh logs",
+    "project:headless:start": "bash scripts/project.sh start --headless",
+    "project:headless:restart": "bash scripts/project.sh restart --headless",
+    "project:headless:status": "bash scripts/project.sh status --headless",
+    "project:headless:logs": "bash scripts/project.sh logs --headless",
+    "build:packages": "pnpm --filter \"./packages/**\" --recursive run build",
+    "build:binary": "bash scripts/build-release.sh",
+    "test:binary": "bash scripts/binary-smoke.sh",
+    "dev": "pnpm build:packages && sh -c 'set -a; [ ! -f .env ] || . ./.env; set +a; pnpm --stream --parallel --filter @lore-co/api --filter @lore-co/web run dev'",
+    "build": "pnpm --recursive --if-present run build",
+    "typecheck": "pnpm build:packages && pnpm --recursive --if-present run typecheck && tsc -p tsconfig.tooling.json",
+    "test": "pnpm build:packages && vitest run && pnpm --recursive --if-present run test",
+    "test:db": "pnpm build:packages && RUN_DATABASE_TESTS=1 vitest run tests/database.integration.test.ts",
+    "test:db:compose": "pnpm build:packages && docker compose --profile test up -d --wait postgres-test && RUN_DATABASE_TESTS=1 TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5433/lore_test vitest run tests/database.integration.test.ts",
+    "test:browser": "playwright test",
+    "test:browser:install": "playwright install chromium",
+    "test:agents:live": "sh -c 'set -a; [ ! -f .env ] || . ./.env; set +a; tsx scripts/native-agents-live-acceptance.ts'",
+    "test:devin:live": "pnpm build:packages && sh -c 'set -a; [ ! -f .env ] || . ./.env; set +a; tsx scripts/devin-live-acceptance.ts'",
+    "test:chain:live": "pnpm build:packages && sh -c 'set -a; [ ! -f .env ] || . ./.env; set +a; tsx scripts/three-agent-chain-live-acceptance.ts'",
+    "test:github:live": "pnpm build:packages && sh -c 'set -a; [ ! -f .env ] || . ./.env; set +a; tsx scripts/github-pr-live-acceptance.ts'",
+    "test:pack": "pnpm build:packages && node scripts/package-smoke.mjs",
+    "db:generate": "pnpm --filter @lore-co/database run db:generate",
+    "db:migrate": "pnpm --filter @lore-co/database run db:migrate",
+    "db:studio": "pnpm --filter @lore-co/database run db:studio",
+    "dev:mcp": "pnpm build:packages && sh -c 'set -a; [ ! -f .env ] || . ./.env; set +a; node packages/mcp/dist/index.js'",
+    "mcp": "sh -c 'set -a; [ ! -f .env ] || . ./.env; set +a; node packages/mcp/dist/index.js'",
+    "demo": "pnpm build:packages && sh -c 'set -a; [ ! -f .env ] || . ./.env; set +a; tsx scripts/demo.ts'"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "@types/node": "^26.2.0",
+    "tsx": "^4.23.12",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10"
+  },
+  "pnpm": {
+    "overrides": {
+      "@nuxt/cli": "3.25.1",
+      "listhen": "1.9.0"
+    },
+    "onlyBuiltDependencies": [
+      "@parcel/watcher",
+      "esbuild"
+    ]
+  }
+}

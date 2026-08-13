@@ -1,0 +1,51 @@
+# Dependencies and package-manager state
+node_modules/
+.pnpm-store/
+.npmrc
+.yarnrc
+.yarnrc.yml
+
+# Generated builds and test artifacts
+dist/
+coverage/
+output/
+.tmp/
+*.tsbuildinfo
+.nuxt/
+.output/
+playwright-report/
+test-results/
+blob-report/
+.cache/
+.vite/
+*.tgz
+*.tar.gz
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+credentials.json
+secrets.json
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+
+# Editor, OS, and logs
+.DS_Store
+.idea/
+.vscode/
+.history/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.cursor/
+
+# Local databases
+*.sqlite
+*.sqlite3
+*.db

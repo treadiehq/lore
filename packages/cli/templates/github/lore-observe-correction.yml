@@ -1,0 +1,41 @@
+name: Lore review correction
+run-name: 'Lore review correction comment #${{ github.event.comment.id }}'
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  observe:
+    if: >-
+      github.event.issue.pull_request &&
+      startsWith(github.event.comment.body, '/lore correct ')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    env:
+      LORE_CLI_REPOSITORY: ${{ vars.LORE_CLI_REPOSITORY || 'treadiehq/lore' }}
+      LORE_CLI_VERSION: ${{ vars.LORE_CLI_VERSION || 'v0.1.0' }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          path: review
+
+      - name: Install Lore CLI
+        run: |
+          export LORE_REPO="$LORE_CLI_REPOSITORY"
+          export LORE_VERSION="$LORE_CLI_VERSION"
+          export LORE_BIN_DIR="$RUNNER_TEMP/lore/bin"
+          curl -fsSL "https://raw.githubusercontent.com/$LORE_CLI_REPOSITORY/$LORE_CLI_VERSION/scripts/install.sh" | bash
+
+      - name: Teach Lore from an authorized correction
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LORE_API_URL: ${{ vars.LORE_API_URL }}
+          LORE_WORKSPACE_TOKEN: ${{ secrets.LORE_WORKSPACE_TOKEN }}
+        run: >-
+          lore github observe-correction
+          --event "$GITHUB_EVENT_PATH"

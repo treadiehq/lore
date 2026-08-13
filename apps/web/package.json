@@ -1,0 +1,25 @@
+{
+  "name": "@lore-co/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "nuxt dev",
+    "build": "nuxt build",
+    "preview": "nuxt preview",
+    "typecheck": "nuxt typecheck",
+    "test": "vitest run --passWithNoTests",
+    "postinstall": "nuxt prepare"
+  },
+  "dependencies": {
+    "@lore-co/sdk": "workspace:*",
+    "nuxt": "3.17.7",
+    "vue": "^3.5.41",
+    "vue-router": "^4.6.4"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "tailwindcss": "^4.3.3",
+    "vue-tsc": "^3.3.9"
+  }
+}

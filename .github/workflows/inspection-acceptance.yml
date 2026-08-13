@@ -1,0 +1,49 @@
+name: Inspection acceptance
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  inspection:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Run real API and database inspection integration
+        run: pnpm test:db:compose
+
+      - name: Install browser
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run inspection browser acceptance
+        run: pnpm test:browser
+
+      - name: Upload browser artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: inspection-playwright
+          path: output/playwright
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Stop test database
+        if: always()
+        run: docker compose --profile test down --remove-orphans

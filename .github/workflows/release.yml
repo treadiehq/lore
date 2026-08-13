@@ -1,0 +1,88 @@
+name: Release Lore CLI
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: lore-linux-x64
+          - os: ubuntu-24.04-arm
+            artifact: lore-linux-arm64
+          - os: macos-13
+            artifact: lore-darwin-x64
+          - os: macos-14
+            artifact: lore-darwin-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.5
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate release version
+        shell: bash
+        run: |
+          package_version="$(node -p "require('./packages/cli/package.json').version")"
+          test "v$package_version" = "$GITHUB_REF_NAME" || {
+            echo "Tag $GITHUB_REF_NAME does not match CLI version $package_version." >&2
+            exit 1
+          }
+
+      - name: Build standalone binary
+        run: bash scripts/build-release.sh "${{ matrix.artifact }}"
+
+      - name: Smoke test standalone binary
+        run: bash scripts/binary-smoke.sh
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/release/${{ matrix.artifact }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+
+      - name: Generate checksums
+        working-directory: release
+        run: |
+          sha256sum lore-* | sort -k2 > SHA256SUMS
+          sha256sum --check SHA256SUMS
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true

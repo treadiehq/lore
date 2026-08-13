@@ -1,0 +1,79 @@
+name: Lore Devin review
+run-name: 'Lore Devin review [${{ github.event.action }}] PR #${{ github.event.pull_request.number }} @ ${{ github.event.pull_request.head.sha }}'
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
+
+concurrency:
+  group: lore-devin-review-${{ github.repository }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: >-
+      !github.event.pull_request.draft &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      contains(github.event.pull_request.labels.*.name, 'lore:devin-review')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      LORE_CLI_REPOSITORY: ${{ vars.LORE_CLI_REPOSITORY || 'treadiehq/lore' }}
+      LORE_CLI_VERSION: ${{ vars.LORE_CLI_VERSION || 'v0.1.0' }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          path: review
+
+      - name: Install Lore CLI
+        run: |
+          export LORE_REPO="$LORE_CLI_REPOSITORY"
+          export LORE_VERSION="$LORE_CLI_VERSION"
+          export LORE_BIN_DIR="$RUNNER_TEMP/lore/bin"
+          curl -fsSL "https://raw.githubusercontent.com/$LORE_CLI_REPOSITORY/$LORE_CLI_VERSION/scripts/install.sh" | bash
+
+      - name: Prepare Lore review context
+        env:
+          LORE_API_URL: ${{ vars.LORE_API_URL }}
+          LORE_WORKSPACE_TOKEN: ${{ secrets.LORE_WORKSPACE_TOKEN }}
+        run: >-
+          lore github prepare-review
+          --provider devin
+          --event "$GITHUB_EVENT_PATH"
+          --checkout "$GITHUB_WORKSPACE/review"
+          --prompt-out "$GITHUB_WORKSPACE/.lore/devin-prompt.md"
+          --metadata-out "$GITHUB_WORKSPACE/.lore/devin-metadata.json"
+
+      - name: Run Lore-enriched Devin review
+        env:
+          DEVIN_API_KEY: ${{ secrets.DEVIN_API_KEY }}
+          DEVIN_ORG_ID: ${{ vars.DEVIN_ORG_ID }}
+        run: >-
+          lore devin run-review
+          --prompt .lore/devin-prompt.md
+          --metadata .lore/devin-metadata.json
+          --output .lore/devin-output.json
+
+      - name: Post or update Lore review
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          lore github post-review
+          --metadata .lore/devin-metadata.json
+          --output .lore/devin-output.json
+
+      - name: Clean up Devin session
+        if: always()
+        continue-on-error: true
+        env:
+          DEVIN_API_KEY: ${{ secrets.DEVIN_API_KEY }}
+          DEVIN_ORG_ID: ${{ vars.DEVIN_ORG_ID }}
+        run: |
+          SESSION_ID="$(jq -r '.sessionId // empty' .lore/devin-metadata.json 2>/dev/null || true)"
+          if [ -n "$SESSION_ID" ]; then
+            lore devin terminate --session "$SESSION_ID"
+          fi

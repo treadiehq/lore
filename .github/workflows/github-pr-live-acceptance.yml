@@ -1,0 +1,89 @@
+name: GitHub PR live acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_billable_reviews:
+        description: Type RUN to create real, potentially billable Codex/Devin reviews
+        required: true
+        type: string
+      target_repository:
+        description: Writable non-fork repository containing the Lore workflows
+        required: true
+        default: treadiehq/retvrn-md
+        type: string
+      base_branch:
+        description: Optional target base branch (blank uses the default branch)
+        required: false
+        type: string
+      providers:
+        description: Review providers to exercise
+        required: true
+        default: both
+        type: choice
+        options:
+          - both
+          - codex
+          - devin
+      cleanup:
+        description: Clean up the PR, branch, comments, labels, and learnings
+        required: true
+        default: always
+        type: choice
+        options:
+          - always
+          - never
+      cli_repository:
+        description: GitHub repository that publishes Lore CLI binaries
+        required: true
+        default: treadiehq/lore
+        type: string
+      cli_version:
+        description: Released Lore CLI tag used by target workflows
+        required: true
+        default: v0.1.0
+        type: string
+
+concurrency:
+  group: github-pr-live-acceptance-${{ inputs.target_repository }}
+  cancel-in-progress: false
+
+jobs:
+  acceptance:
+    if: inputs.confirm_billable_reviews == 'RUN'
+    environment: github-pr-live-acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      RUN_GITHUB_PR_LIVE_TESTS: "1"
+      GH_TOKEN: ${{ secrets.GITHUB_PR_LIVE_TOKEN }}
+      GITHUB_PR_LIVE_REPO: ${{ inputs.target_repository }}
+      GITHUB_PR_LIVE_BASE_BRANCH: ${{ inputs.base_branch }}
+      GITHUB_PR_LIVE_PROVIDERS: ${{ inputs.providers }}
+      GITHUB_PR_LIVE_CLEANUP: ${{ inputs.cleanup }}
+      GITHUB_PR_LIVE_CLI_REPOSITORY: ${{ inputs.cli_repository }}
+      GITHUB_PR_LIVE_CLI_VERSION: ${{ inputs.cli_version }}
+      LORE_API_URL: ${{ vars.LORE_API_URL }}
+      LORE_WORKSPACE_TOKEN: ${{ secrets.LORE_WORKSPACE_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build:packages
+
+      - name: Run GitHub PR acceptance
+        run: pnpm test:github:live

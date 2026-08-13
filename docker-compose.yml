@@ -1,0 +1,148 @@
+name: lore
+
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.6-pg18
+    environment:
+      POSTGRES_DB: lore
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d lore"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  migrate:
+    build:
+      context: .
+      target: api
+    command:
+      - ./node_modules/.bin/drizzle-kit
+      - migrate
+      - --config=drizzle.config.ts
+    working_dir: /app/packages/database
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/lore
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      target: api
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/lore
+      API_HOST: 0.0.0.0
+      API_PORT: 3001
+      API_JSON_BODY_LIMIT: ${API_JSON_BODY_LIMIT:-2mb}
+      NUXT_ORIGIN: ${NUXT_ORIGIN:-http://localhost:3002}
+      LORE_WORKSPACE_TOKEN: ${LORE_WORKSPACE_TOKEN:-local-lore-development-token}
+      LORE_WORKSPACE_ORGANIZATION: ${LORE_WORKSPACE_ORGANIZATION:-local}
+      AUTH_EMAIL_MODE: ${AUTH_EMAIL_MODE:-local}
+      AUTH_WEB_ORIGIN: ${AUTH_WEB_ORIGIN:-http://localhost:3002}
+      AUTH_EMAIL_FROM: "${AUTH_EMAIL_FROM:-Lore <auth@example.com>}"
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      AUTH_MAGIC_LINK_TTL_MINUTES: ${AUTH_MAGIC_LINK_TTL_MINUTES:-15}
+      AUTH_SESSION_TTL_DAYS: ${AUTH_SESSION_TTL_DAYS:-30}
+      DEVIN_POLLING_ENABLED: ${DEVIN_POLLING_ENABLED:-false}
+      DEVIN_API_KEY: ${DEVIN_API_KEY:-}
+      DEVIN_ORG_ID: ${DEVIN_ORG_ID:-}
+      DEVIN_REPOSITORY_ALLOWLIST: ${DEVIN_REPOSITORY_ALLOWLIST:-}
+      DEVIN_POLL_INTERVAL_MS: ${DEVIN_POLL_INTERVAL_MS:-15000}
+      DEVIN_REQUEST_TIMEOUT_MS: ${DEVIN_REQUEST_TIMEOUT_MS:-10000}
+      DEVIN_POLL_BATCH_SIZE: ${DEVIN_POLL_BATCH_SIZE:-25}
+      EXTRACTOR_PROVIDER: ${EXTRACTOR_PROVIDER:-heuristic}
+      EXTRACTOR_MIN_CONFIDENCE: ${EXTRACTOR_MIN_CONFIDENCE:-0.8}
+      EXTRACTOR_MODEL: ${EXTRACTOR_MODEL:-}
+      EXTRACTOR_BASE_URL: ${EXTRACTOR_BASE_URL:-}
+      EXTRACTOR_API_KEY: ${EXTRACTOR_API_KEY:-}
+      RETRIEVAL_MODE: ${RETRIEVAL_MODE:-auto}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-https://api.openai.com/v1}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1536}
+      EMBEDDING_TIMEOUT_MS: ${EMBEDDING_TIMEOUT_MS:-5000}
+      SEMANTIC_MIN_SIMILARITY: ${SEMANTIC_MIN_SIMILARITY:-0.65}
+      CONTEXT_MAX_ITEMS: ${CONTEXT_MAX_ITEMS:-10}
+      CONTEXT_MAX_CHARACTERS: ${CONTEXT_MAX_CHARACTERS:-12000}
+      CONTEXT_MAX_ESTIMATED_TOKENS: ${CONTEXT_MAX_ESTIMATED_TOKENS:-4000}
+    ports:
+      - "127.0.0.1:${API_PORT:-3004}:3001"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3001/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      target: web
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3000
+      NUXT_LORE_API_URL: http://api:3001
+      NUXT_AUTH_COOKIE_NAME: ${NUXT_AUTH_COOKIE_NAME:-lore_session}
+      NUXT_AUTH_COOKIE_SECURE: ${NUXT_AUTH_COOKIE_SECURE:-false}
+      NUXT_PUBLIC_API_BASE_URL: /api/lore
+      NUXT_PUBLIC_LORE_CONNECTOR_API_URL: ${NUXT_PUBLIC_LORE_CONNECTOR_API_URL:-http://localhost:3004}
+      NUXT_PUBLIC_LORE_INSTALL_URL: ${NUXT_PUBLIC_LORE_INSTALL_URL:-https://raw.githubusercontent.com/treadiehq/lore/main/scripts/install.sh}
+    ports:
+      - "127.0.0.1:${NUXT_PORT:-3002}:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    restart: unless-stopped
+
+  postgres-test:
+    image: pgvector/pgvector:0.8.6-pg18
+    profiles: ["test"]
+    environment:
+      POSTGRES_DB: lore_test
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "127.0.0.1:5433:5432"
+    tmpfs:
+      - /var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d lore_test"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+      start_period: 5s
+
+volumes:
+  postgres-data:

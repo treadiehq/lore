@@ -1,0 +1,30 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "experimentalDecorators": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node", "vitest/globals"],
+    "paths": {
+      "@lore-co/core": ["./packages/core/src/index.ts"],
+      "@lore-co/core/schemas": ["./packages/core/src/schemas.ts"],
+      "@lore-co/database": ["./packages/database/src/index.ts"],
+      "@lore-co/extractor": ["./packages/extractor/src/index.ts"],
+      "@lore-co/retrieval": ["./packages/retrieval/src/index.ts"],
+      "@lore-co/sdk": ["./packages/sdk/src/index.ts"],
+      "@lore-co/adapter-generic": [
+        "./packages/adapters/generic/src/index.ts"
+      ],
+      "@lore-co/adapter-claude": [
+        "./packages/adapters/claude/src/index.ts"
+      ],
+      "@lore-co/adapter-codex": [
+        "./packages/adapters/codex/src/index.ts"
+      ],
+      "@lore-co/adapter-devin": [
+        "./packages/adapters/devin/src/index.ts"
+      ]
+    }
+  },
+  "include": ["scripts/**/*.ts", "tests/**/*.ts", "vitest.config.ts"]
+}

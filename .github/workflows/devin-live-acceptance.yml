@@ -1,0 +1,48 @@
+name: Devin live acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_billable_session:
+        description: Type RUN to create one capped, billable Devin session
+        required: true
+        type: string
+
+concurrency:
+  group: devin-live-acceptance
+  cancel-in-progress: false
+
+jobs:
+  acceptance:
+    if: inputs.confirm_billable_session == 'RUN'
+    environment: devin-live-acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      RUN_DEVIN_LIVE_TESTS: "1"
+      LORE_API_URL: ${{ vars.LORE_API_URL }}
+      LORE_WORKSPACE_TOKEN: ${{ secrets.LORE_WORKSPACE_TOKEN }}
+      DEVIN_API_KEY: ${{ secrets.DEVIN_API_KEY }}
+      DEVIN_ORG_ID: ${{ vars.DEVIN_ORG_ID }}
+      DEVIN_ACCEPTANCE_REPO: ${{ vars.DEVIN_ACCEPTANCE_REPO }}
+      DEVIN_CREATE_AS_USER_ID: ${{ vars.DEVIN_CREATE_AS_USER_ID }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build:packages
+
+      - name: Run one-session Devin acceptance
+        run: pnpm test:devin:live
