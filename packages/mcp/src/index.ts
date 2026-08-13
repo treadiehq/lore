@@ -155,7 +155,7 @@ export function createMcpServer(
     });
   const server = new McpServer({
     name: "lore",
-    version: "0.1.0",
+    version: "0.1.1",
   });
 
   server.registerTool(

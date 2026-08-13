@@ -20,6 +20,9 @@ const packages = [
   resolve(root, "packages/adapters/generic"),
   resolve(root, "packages/cli"),
 ];
+const expectedVersion = JSON.parse(
+  await readFile(resolve(root, "packages/cli/package.json"), "utf8"),
+).version;
 
 async function run(command, args, cwd) {
   return execFile(command, args, {
@@ -99,11 +102,11 @@ try {
     ),
   );
   if (
-    installedSdk.dependencies?.["@lore-co/core"] !== "0.1.0" ||
-    installedAdapter.dependencies?.["@lore-co/core"] !== "0.1.0" ||
-    installedAdapter.dependencies?.["@lore-co/sdk"] !== "0.1.0" ||
-    installedCli.dependencies?.["@lore-co/core"] !== "0.1.0" ||
-    installedCli.dependencies?.["@lore-co/sdk"] !== "0.1.0"
+    installedSdk.dependencies?.["@lore-co/core"] !== expectedVersion ||
+    installedAdapter.dependencies?.["@lore-co/core"] !== expectedVersion ||
+    installedAdapter.dependencies?.["@lore-co/sdk"] !== expectedVersion ||
+    installedCli.dependencies?.["@lore-co/core"] !== expectedVersion ||
+    installedCli.dependencies?.["@lore-co/sdk"] !== expectedVersion
   ) {
     throw new Error("pnpm pack did not rewrite workspace dependencies");
   }
@@ -137,7 +140,7 @@ if (task.agent !== "fixture-host" || adapter.toTask({ task: task.task }).agent !
     process.platform === "win32" ? "lore.cmd" : "lore",
   );
   const cliResult = await run(loreExecutable, ["--version"], fixture);
-  if (cliResult.stdout.trim() !== "0.1.0") {
+  if (cliResult.stdout.trim() !== expectedVersion) {
     throw new Error(
       `Installed Lore CLI did not execute through its package binary: ${cliResult.stdout.trim() || "<no output>"}`,
     );

@@ -1,33 +1,26 @@
 # Lore CLI
 
-The Lore connector installs native Codex and Claude Code lifecycle hooks. Every
-prompt retrieves relevant engineering context. A first prompt is observed on
-its own; later prompts are paired with the previous assistant response so Lore
-can capture explicit corrections.
+The Lore connector installs native Codex and Claude Code lifecycle hooks. For
+each supported prompt, Lore attempts to retrieve relevant engineering context.
+A first prompt is observed on its own; later prompts are paired with the
+previous assistant response when valid pending state is available. Hook and
+network failures fail open so they do not block the agent.
 
-## Connect
+## Install and connect
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/treadiehq/lore/main/scripts/install.sh | bash
+pnpm install --global @lore-co/cli
+
 lore connect \
   --url https://lore.example.com \
-  --token "$LORE_TOKEN"
+  --token "$LORE_WORKSPACE_TOKEN" \
+  --agent claude \
+  --agent codex
+
+lore doctor
 ```
 
-The standalone binary supports macOS and Linux on x64 and arm64. Downloads are
-verified against the release SHA-256 manifest and do not require a JavaScript
-runtime. Use `lore update` to install a newer release.
-
-The npm package remains available for JavaScript-based environments:
-
-```sh
-npx @lore-co/cli connect \
-  --url https://lore.example.com \
-  --token "$LORE_TOKEN"
-```
-
-Only the npm package scope is `@lore-co`; the installed executable and every
-command remain `lore`.
+The package requires Node.js 22 or newer and installs the `lore` command.
 
 `connect` auto-detects `codex` and `claude`. Use `--agent codex` or
 `--agent claude` for an explicit headless install. Configuration is stored in
@@ -46,7 +39,7 @@ lore doctor
 lore disconnect
 ```
 
-All commands also support `--json`. `disconnect` removes only hook handlers
+The three commands above also support `--json`. `disconnect` removes only hook handlers
 marked as Lore-owned, then deletes Lore's credential, legacy hook runtime,
 pending state, and retry queue. It does not remove the installed `lore` binary
 or restore a whole backup over newer agent settings.
@@ -78,7 +71,7 @@ deliveries are visible through Lore activity.
 strict audited endpoints:
 
 ```sh
-LORE_API_URL=http://localhost:3004 \
+LORE_API_URL=https://lore.example.com \
 LORE_WORKSPACE_TOKEN=... \
   lore host deliver --input delivery.json --output prompt
 
@@ -126,6 +119,12 @@ DEVIN_API_KEY=... DEVIN_ORG_ID=... \
   --prompt "Apply the reviewer correction"
 ```
 
+The Lore API must also have Devin polling enabled with the same
+`DEVIN_API_KEY` and `DEVIN_ORG_ID`, and the repository must appear in
+`DEVIN_REPOSITORY_ALLOWLIST`. `lore devin setup` checks Devin access and Lore
+reachability; `start` performs authenticated delivery and poller-registration
+checks.
+
 Both commands retrieve Lore context with a stable delivery event and receipt.
 `devin start` registers the created session for transcript polling.
 `devin prompt` re-registers the session before sending, so a paused poller can
@@ -154,26 +153,29 @@ OPENAI_API_KEY=... DEVIN_API_KEY=... DEVIN_ORG_ID=org-... \
   --configure-secrets
 ```
 
-The installer copies trusted workflow and output-schema templates without
-committing them. Codex uses the official Codex action. Devin uses a normal v3
-session because the dedicated Devin Review API cannot accept dynamic Lore
-context. Reviews run only for same-repository, non-draft pull requests bearing
-the corresponding `lore:codex-review` or `lore:devin-review` label.
+The command overwrites three fixed Lore workflow files and the Lore review
+schema without committing them. Review or back up existing files first.
+`--configure-secrets` requires authenticated `gh` access and updates the named
+Actions secrets and variables in the target repository. Codex uses the
+official Codex action. Devin uses a normal v3 session because the dedicated
+Devin Review API cannot accept dynamic Lore context. Reviews run only for
+same-repository, non-draft pull requests bearing the corresponding
+`lore:codex-review` or `lore:devin-review` label.
 
-Generated jobs download a pinned standalone release. Set repository variable
-`LORE_CLI_VERSION` to the release tag and, when using a fork, set
-`LORE_CLI_REPOSITORY` to its `owner/repository` value. The installer verifies
-the downloaded binary before each job invokes `lore` directly.
+Generated jobs require a published standalone binary release. No public binary
+release exists yet, so the generated defaults cannot currently install Lore.
+After release, set `LORE_CLI_REPOSITORY` to its publicly readable
+`owner/repository` and `LORE_CLI_VERSION` to an existing release tag.
 
 The workflows require secret `LORE_WORKSPACE_TOKEN` and variable
 `LORE_API_URL`. Codex additionally requires secret `OPENAI_API_KEY`. Devin
 additionally requires secret `DEVIN_API_KEY` and variable `DEVIN_ORG_ID`.
-Review jobs use `contents: read` plus `pull-requests: write` so the workflow
-token can inspect and publish PR comments; the correction workflow has
-read-only GitHub permissions.
+Codex separates a read-only review job from its `pull-requests: write` posting
+job. The Devin review job uses `contents: read` and `pull-requests: write`.
+The correction workflow has read-only GitHub permissions.
 Native `/devin review` cannot accept dynamic Lore context; the generated Lore
-workflow uses a normal capped Devin session instead. The optional managed
-plugin remains a closed-beta path controlled by Devin availability.
+workflow uses a normal capped Devin session instead. The private Devin hook
+prototype is not currently an installable managed plugin.
 
 An authorized maintainer can turn a false-positive bot comment into shared
 knowledge with:
@@ -184,35 +186,14 @@ knowledge with:
 The correction and current behavior go here.
 ```
 
-## Release acceptance
+## Production guidance
 
-From the repository root, deterministic unit/integration checks, browser
-acceptance, and package-consumer smoke are:
+- Use a dedicated workspace token for each person, machine, or integration.
+- Connect only to an HTTPS Lore API outside local development.
+- Run `lore doctor` after installation and configuration changes.
+- Keep provider credentials in environment variables or GitHub Actions secrets.
+- After standalone publication, pin `LORE_CLI_VERSION` in automated workflows
+  and update it deliberately.
 
-```sh
-pnpm test
-pnpm typecheck
-pnpm build
-pnpm test:browser
-pnpm test:pack
-pnpm build:binary
-pnpm test:binary
-```
-
-Credential-gated live commands are explicit and separate:
-
-```sh
-RUN_NATIVE_AGENT_LIVE_TESTS=1 pnpm test:agents:live
-RUN_DEVIN_LIVE_TESTS=1 pnpm test:devin:live
-RUN_THREE_AGENT_CHAIN_LIVE_TESTS=RUN pnpm test:chain:live
-RUN_GITHUB_PR_LIVE_TESTS=1 pnpm test:github:live
-```
-
-The native command covers first prompts and real resumed later turns in both
-Claude and Codex. The chain command covers Claude → Devin → fresh Codex and
-Claude. Both paths, plus standalone Devin acceptance, have passed with real
-authenticated clients. Both GitHub review/correction paths passed target
-preflight and exact-head acceptance with a packed current artifact on August
-13, 2026. The current acceptance gate preflights a published standalone release.
-Rerun all live gates with customer credentials before rollout.
-Lore has no dream mode or company-wide search.
+For source builds, self-hosting, tests, and release internals, see the
+[technical and development guide](../../docs/detailed.md).

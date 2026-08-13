@@ -13,11 +13,15 @@ case "$(uname -s):$(uname -m)" in
 esac
 
 binary="$ROOT/dist/release/$asset"
-if [ ! -x "$binary" ]; then
+expected="$(node -p "require('$ROOT/packages/cli/package.json').version")"
+installed_version=""
+if [ -x "$binary" ]; then
+  installed_version="$("$binary" --version 2>/dev/null || true)"
+fi
+if [ "$installed_version" != "$expected" ]; then
   bash "$SCRIPT_DIR/build-release.sh" "$asset"
 fi
 
-expected="$(node -p "require('$ROOT/packages/cli/package.json').version")"
 actual="$("$binary" --version)"
 [ "$actual" = "$expected" ] || {
   echo "Version mismatch: expected $expected, received $actual" >&2

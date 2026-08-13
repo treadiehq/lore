@@ -9,10 +9,14 @@ Codex, Devin, and other agents when they are relevant.
 
 Go to [Lore Website](https://uselore.co) and sign up to get a workspace token.
 
-Install the CLI:
+Install the CLI with either option:
 
 ```sh
+# Standalone binary for macOS or Linux
 curl -fsSL https://raw.githubusercontent.com/treadiehq/lore/main/scripts/install.sh | bash
+
+# pnpm (Node.js 22+)
+pnpm add --global @lore-co/cli
 ```
 
 Connect Claude and Codex:
@@ -57,12 +61,14 @@ Add `lore:codex-review` or `lore:devin-review` to a pull request. See the
 ## Other agents
 
 Lore includes a TypeScript SDK, a generic adapter, `lore host` commands, and an
-optional MCP server. See [generic integrations](detailed.md#generic-host-integrations).
+optional MCP server.
 
 ## Documentation
 
 - [CLI guide](packages/cli/README.md)
-- [Detailed guide](detailed.md)
+- [TypeScript SDK](packages/sdk/README.md)
+- [Generic agent adapter](packages/adapters/generic/README.md)
+- [Technical and development guide](docs/detailed.md)
 
 ## License
 

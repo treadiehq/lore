@@ -2,6 +2,8 @@
 
 Host-controlled bridge for services that own their agent runtime.
 
+## Install
+
 ```sh
 pnpm add @lore-co/adapter-generic
 ```
@@ -32,4 +34,14 @@ stable connector, event, and session identities. `observeEvent`,
 delivered memories. `prepareTask` remains as a legacy compatibility path.
 Model and MCP policy stays with the host application.
 
-Node.js 22 or newer is required.
+## Production guidance
+
+- Keep the workspace token in server-side secrets.
+- Persist stable connector, event, and session IDs for safe retries.
+- Call `prepareDelivery` before the model request and record observations after
+  the model turn.
+- Keep model-provider and MCP authorization decisions in the host application.
+
+Node.js 22 or newer is required. See
+[generic host integrations](../../../docs/detailed.md#generic-host-integrations) for
+complete examples.
