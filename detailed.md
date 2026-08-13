@@ -453,11 +453,21 @@ The older `/v1/memories` paths remain aliases.
 
 ## TypeScript SDK
 
+Use `@lore-co/sdk` when an application needs direct, typed access to Lore's
+learnings, observations, audited context deliveries, and turns.
+
+```sh
+pnpm add @lore-co/sdk
+```
+
 ```ts
 import { LoreClient } from "@lore-co/sdk";
 
 const lore = new LoreClient({
   baseUrl: process.env.LORE_API_URL ?? "http://localhost:3004",
+  headers: {
+    authorization: `Bearer ${process.env.LORE_WORKSPACE_TOKEN!}`,
+  },
 });
 
 const observed = await lore.observe({
@@ -589,6 +599,13 @@ does not choose MCP or override host identity.
 An external host needs this one-time bridge integration around its model call;
 native connector installation cannot intercept an arbitrary API service, CI
 orchestrator, or bot.
+
+Install the higher-level adapter instead of the SDK when the host owns the
+agent runtime and wants Lore to prepare prompts and normalize observations:
+
+```sh
+pnpm add @lore-co/adapter-generic
+```
 
 An API-backed model service can prepare audited delivery before calling its
 model provider:

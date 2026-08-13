@@ -7,9 +7,9 @@ Codex, Devin, and other agents when they are relevant.
 
 ## Connect
 
-Get a Lore API URL and workspace token from by signing up.
+Go to [Lore Website](https://uselore.co) and sign up to get a workspace token.
 
-Once released, install the CLI:
+Install the CLI:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/treadiehq/lore/main/scripts/install.sh | bash
