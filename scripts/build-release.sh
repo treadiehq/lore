@@ -23,6 +23,10 @@ command -v node >/dev/null 2>&1 || {
   echo "Node.js is required to generate embedded CLI assets." >&2
   exit 1
 }
+command -v pnpm >/dev/null 2>&1 || {
+  echo "pnpm is required to build Lore workspace dependencies." >&2
+  exit 1
+}
 
 ACTUAL_BUN_VERSION="$(bun --version)"
 if [ "$ACTUAL_BUN_VERSION" != "$EXPECTED_BUN_VERSION" ]; then
@@ -33,6 +37,8 @@ fi
 VERSION="$(node -p "require('$ROOT/packages/cli/package.json').version")"
 [ -n "$VERSION" ] || { echo "Could not read the Lore CLI version." >&2; exit 1; }
 
+pnpm --dir "$ROOT" --filter @lore-co/core run build
+pnpm --dir "$ROOT" --filter @lore-co/sdk run build
 node "$SCRIPT_DIR/generate-cli-assets.mjs"
 rm -rf "$OUT"
 mkdir -p "$OUT"
