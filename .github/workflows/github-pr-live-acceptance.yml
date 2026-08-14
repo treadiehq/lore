@@ -41,7 +41,7 @@ on:
       cli_version:
         description: Released Lore CLI tag used by target workflows
         required: true
-        default: v0.1.0
+        default: v0.1.1
         type: string
 
 concurrency:

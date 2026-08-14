@@ -21,6 +21,7 @@ const creating = ref(false);
 const createdToken = ref<CreateWorkspaceTokenResponse | null>(null);
 const revokeTarget = ref<WorkspaceToken | null>(null);
 const revoking = ref(false);
+const setupHelpOpen = ref(false);
 
 const {
   data: response,
@@ -137,6 +138,23 @@ async function revokeToken(): Promise<void> {
           }}
         </p>
       </div>
+      <button
+        type="button"
+        class="lore-button-secondary self-start"
+        :aria-expanded="setupHelpOpen"
+        aria-controls="setup-help-drawer"
+        @click="setupHelpOpen = true"
+      >
+        <svg viewBox="0 0 20 20" fill="none" class="size-4" aria-hidden="true">
+          <path
+            d="M10 14.25v.05M7.7 7.35a2.4 2.4 0 1 1 3.3 2.22c-.64.3-1 .7-1 1.43v.25M17 10a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+          />
+        </svg>
+        Setup help
+      </button>
     </header>
 
     <section
@@ -149,49 +167,108 @@ async function revokeToken(): Promise<void> {
       </h2>
       <p class="mt-1 text-sm leading-6 text-lore-text-secondary">
         The command installs Lore’s Codex and Claude hooks and verifies the
-        connection. Run it directly in your terminal—not in an agent chat.
+        connection. Run it directly in your terminal, not in an agent chat.
       </p>
     </section>
 
     <section
       v-if="createdToken"
-      class="mt-5 rounded-[0.625rem] border border-lore-accent/40 bg-lore-accent-soft p-4"
+      class="mt-5 overflow-hidden rounded-xl border border-lore-border-strong bg-lore-surface"
       aria-labelledby="new-token-heading"
+      aria-live="polite"
     >
-      <div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <p class="text-xs font-semibold text-lore-accent">
-            {{
-              isOnboarding
-                ? "Your setup command is ready"
-                : "Copy this token now"
-            }}
-          </p>
-          <h2 id="new-token-heading" class="mt-1.5 text-base font-semibold text-lore-text">
-            {{ createdToken.workspaceToken.name }}
-          </h2>
-          <p class="mt-1 text-sm leading-6 text-lore-text-secondary">
-            {{
-              isOnboarding
-                ? "Copy and run the command below. Its one-time token cannot be shown again."
-                : "This secret is shown once. Lore stores only its hash and cannot recover it later."
-            }}
-          </p>
+      <div class="p-5 sm:p-6">
+        <div class="flex items-start gap-4">
+          <span
+            class="flex size-9 shrink-0 items-center justify-center rounded-lg border border-lore-accent/25 bg-lore-accent-soft/50 text-lore-accent"
+            aria-hidden="true"
+          >
+            <svg viewBox="0 0 20 20" fill="none" class="size-4">
+              <path
+                d="m5 10.25 3.1 3.1L15.5 6"
+                stroke="currentColor"
+                stroke-width="1.7"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </span>
+
+          <div class="min-w-0 flex-1">
+            <div class="flex items-start justify-between gap-4">
+              <div class="min-w-0">
+                <p
+                  class="text-[0.6875rem] font-semibold uppercase tracking-[0.12em] text-lore-accent"
+                >
+                  {{ isOnboarding ? "Setup command ready" : "Token created" }}
+                </p>
+                <h2
+                  id="new-token-heading"
+                  class="mt-1.5 text-lg font-semibold tracking-tight text-lore-text"
+                >
+                  {{
+                    isOnboarding
+                      ? `Connect ${createdToken.workspaceToken.name}`
+                      : createdToken.workspaceToken.name
+                  }}
+                </h2>
+              </div>
+
+              <button
+                type="button"
+                class="lore-button-ghost min-h-8 shrink-0 px-2.5 py-1 text-xs"
+                @click="createdToken = null"
+              >
+                <svg viewBox="0 0 20 20" fill="none" class="size-3.5" aria-hidden="true">
+                  <path
+                    d="m6 6 8 8m0-8-8 8"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    stroke-linecap="round"
+                  />
+                </svg>
+                Dismiss
+              </button>
+            </div>
+
+            <p class="mt-1.5 max-w-2xl text-sm leading-6 text-lore-text-secondary">
+              {{
+                isOnboarding
+                  ? "Run this command once on the machine you want to connect."
+                  : "Use this token to authenticate a new Lore connector."
+              }}
+            </p>
+
+            <div
+              class="mt-3 inline-flex items-center gap-2 rounded-md border border-lore-warning/25 bg-lore-warning-soft/50 px-2.5 py-1.5 text-xs text-lore-warning"
+            >
+              <svg viewBox="0 0 20 20" fill="none" class="size-3.5 shrink-0" aria-hidden="true">
+                <path
+                  d="M6.75 8V6.5a3.25 3.25 0 0 1 6.5 0V8m-7.5 0h8.5c.7 0 1.25.56 1.25 1.25v5.5c0 .7-.56 1.25-1.25 1.25h-8.5c-.7 0-1.25-.56-1.25-1.25v-5.5C4.5 8.55 5.06 8 5.75 8Z"
+                  stroke="currentColor"
+                  stroke-width="1.35"
+                  stroke-linecap="round"
+                />
+              </svg>
+              <span>
+                {{
+                  isOnboarding
+                    ? "Copy it now. The embedded token will not be shown again."
+                    : "This secret will not be shown again."
+                }}
+              </span>
+            </div>
+          </div>
         </div>
-        <button
-          type="button"
-          class="lore-button-ghost self-start"
-          @click="createdToken = null"
-        >
-          Dismiss
-        </button>
       </div>
 
       <div
         v-if="!isOnboarding"
-        class="mt-4 flex flex-col gap-2 border-t border-lore-accent/20 pt-4 sm:flex-row sm:items-center"
+        class="flex flex-col gap-3 border-t border-lore-border bg-lore-sidebar px-5 py-4 sm:flex-row sm:items-center"
       >
-        <code class="min-w-0 flex-1 break-all text-xs leading-5 text-lore-text">
+        <code
+          class="min-w-0 flex-1 wrap-break-word font-mono text-xs leading-5 text-lore-text-secondary"
+        >
           {{ createdToken.token }}
         </code>
         <button
@@ -203,34 +280,86 @@ async function revokeToken(): Promise<void> {
         </button>
       </div>
 
-      <div class="mt-3 border-t border-lore-accent/20 pt-3">
-        <p class="lore-section-label">
-          Run once in your terminal
-        </p>
-        <div class="mt-2 flex flex-col gap-2 sm:flex-row sm:items-start">
-          <code class="min-w-0 flex-1 whitespace-pre-wrap break-all text-xs leading-5 text-lore-text-secondary">
-            {{ connectorCommand }}
-          </code>
-          <button
-            type="button"
-            class="lore-button-secondary shrink-0"
-            @click="copyValue(connectorCommand, 'Connect command copied.')"
+      <div class="border-t border-lore-border bg-lore-sidebar p-4 sm:p-5">
+        <div class="flex items-start gap-3">
+          <span
+            class="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-md border border-lore-border-strong bg-lore-raised text-xs font-semibold text-lore-text-secondary"
+            aria-hidden="true"
           >
-            {{ isOnboarding ? "Copy setup command" : "Copy command" }}
-          </button>
+            1
+          </span>
+          <div>
+            <p class="text-sm font-medium text-lore-text">Terminal command</p>
+            <p class="mt-0.5 text-xs leading-5 text-lore-text-muted">
+              Run once on the machine you want Lore to connect.
+            </p>
+          </div>
         </div>
+
         <div
-          v-if="isOnboarding"
-          class="mt-3 flex flex-col gap-3 border-t border-lore-accent/20 pt-3 sm:flex-row sm:items-center sm:justify-between"
+          class="mt-3 overflow-hidden rounded-lg border border-lore-border-strong bg-lore-bg"
         >
-          <p class="text-xs leading-5 text-lore-text-secondary">
-            Once Doctor reports a healthy connection, your agents can share
-            relevant teachings and corrections.
-          </p>
-          <NuxtLink to="/activity" class="lore-button-primary shrink-0">
-            Continue to Activity
-          </NuxtLink>
+          <div
+            class="flex items-center gap-2 border-b border-lore-border bg-lore-raised px-3 py-2"
+          >
+            <span class="size-2 rounded-full bg-lore-danger/70" aria-hidden="true" />
+            <span class="size-2 rounded-full bg-lore-warning/70" aria-hidden="true" />
+            <span class="size-2 rounded-full bg-lore-success/70" aria-hidden="true" />
+            <span class="ml-1 text-[0.6875rem] font-medium text-lore-text-muted">
+              Terminal
+            </span>
+            <button
+              type="button"
+              class="lore-focus ml-auto inline-flex min-h-8 items-center gap-1.5 rounded-md border border-lore-border-strong bg-lore-surface px-2.5 py-1 text-xs font-semibold text-lore-text transition-colors hover:bg-lore-hover"
+              @click="copyValue(connectorCommand, 'Connect command copied.')"
+            >
+              <svg viewBox="0 0 20 20" fill="none" class="size-3.5" aria-hidden="true">
+                <path
+                  d="M7.25 6.25V5c0-.7.56-1.25 1.25-1.25H15c.7 0 1.25.56 1.25 1.25v6.5c0 .7-.56 1.25-1.25 1.25h-1.25m-8.75-6.5h6.5c.7 0 1.25.56 1.25 1.25V14c0 .7-.56 1.25-1.25 1.25H5c-.7 0-1.25-.56-1.25-1.25V7.5c0-.7.56-1.25 1.25-1.25Z"
+                  stroke="currentColor"
+                  stroke-width="1.35"
+                  stroke-linejoin="round"
+                />
+              </svg>
+              {{ isOnboarding ? "Copy setup command" : "Copy command" }}
+            </button>
+          </div>
+          <pre
+            class="max-h-48 overflow-auto whitespace-pre-wrap wrap-break-word p-4 font-mono text-xs leading-6 text-lore-text-secondary"
+          ><code>{{ connectorCommand }}</code></pre>
         </div>
+      </div>
+
+      <div
+        v-if="isOnboarding"
+        class="flex flex-col gap-4 border-t border-lore-border bg-lore-surface px-5 py-4 sm:flex-row sm:items-center sm:justify-between"
+      >
+        <div class="flex items-start gap-3">
+          <span
+            class="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-md border border-lore-border-strong bg-lore-raised text-xs font-semibold text-lore-text-secondary"
+            aria-hidden="true"
+          >
+            2
+          </span>
+          <div>
+            <p class="text-sm font-medium text-lore-text">Verify the connection</p>
+            <p class="mt-0.5 text-xs leading-5 text-lore-text-secondary">
+              After Doctor reports healthy, open Activity to see Lore working.
+            </p>
+          </div>
+        </div>
+        <NuxtLink to="/activity" class="lore-button-primary shrink-0">
+          Open Activity
+          <svg viewBox="0 0 20 20" fill="none" class="size-3.5" aria-hidden="true">
+            <path
+              d="M4.5 10h11m-4-4 4 4-4 4"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </NuxtLink>
       </div>
     </section>
 
@@ -411,6 +540,11 @@ async function revokeToken(): Promise<void> {
       :pending="revoking"
       @confirm="revokeToken"
       @cancel="revokeTarget = null"
+    />
+    <SetupHelpDrawer
+      :open="setupHelpOpen"
+      :workspace-token="createdToken?.token ?? null"
+      @close="setupHelpOpen = false"
     />
   </div>
 </template>

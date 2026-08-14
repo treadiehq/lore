@@ -14,7 +14,7 @@ Usage:
   lore update [--version <tag>]
 
 Options:
-  --version <tag>  Release tag to install, for example v0.1.0
+  --version <tag>  Release tag to install, for example v0.1.1
   -h, --help       Show this help
 
 Environment:
@@ -22,7 +22,7 @@ Environment:
 
 Examples:
   lore update
-  lore update --version v0.1.0
+  lore update --version v0.1.1
 `;
 
 function parseVersion(args: readonly string[]): string | undefined | null {
@@ -38,7 +38,7 @@ function parseVersion(args: readonly string[]): string | undefined | null {
     if (version !== undefined && /^v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/u.test(version)) {
       return version;
     }
-    throw new Error("--version must be a release tag such as v0.1.0");
+    throw new Error("--version must be a release tag such as v0.1.1");
   }
   throw new Error("Unknown update options. Try: lore update --help");
 }

@@ -137,14 +137,19 @@ Production email delivery uses Resend:
 ```dotenv
 AUTH_EMAIL_MODE=resend
 AUTH_WEB_ORIGIN=https://lore.example.com
+NUXT_ORIGIN=https://lore.example.com
 AUTH_EMAIL_FROM=Lore <auth@example.com>
 RESEND_API_KEY=re_...
 NUXT_AUTH_COOKIE_SECURE=true
 ```
 
-`AUTH_WEB_ORIGIN` must be an HTTPS origin without a path. Resend mode requires
-all four API settings shown above. Keep `AUTH_SESSION_TTL_DAYS=30` for now
-because the web cookie lifetime is fixed at 30 days.
+`AUTH_WEB_ORIGIN` must be an HTTPS origin without a path and `NUXT_ORIGIN` must
+include that exact origin. Resend mode requires all five API settings shown
+above. Production rejects local email mode so magic links cannot be written to
+logs. Headless deployments use `AUTH_EMAIL_MODE=disabled`, which makes the
+public signup, login, and verification routes return `404` without creating
+users, links, or sessions. Keep `AUTH_SESSION_TTL_DAYS=30` for now because the
+web cookie lifetime is fixed at 30 days.
 
 ## Connect agents
 
@@ -298,7 +303,7 @@ first. `--configure-secrets` requires authenticated `gh` access and replaces
 the named Actions secrets and variables. Commit the generated `.github` files,
 then add `lore:codex-review` or `lore:devin-review` to a pull request.
 
-Generated workflows default to `LORE_CLI_VERSION=v0.1.0` and
+Generated workflows default to `LORE_CLI_VERSION=v0.1.1` and
 `LORE_CLI_REPOSITORY=treadiehq/lore`. The release repository must be publicly
 readable by GitHub-hosted runners. Generated jobs download the binary and check
 it against that release's SHA-256 manifest before invoking `lore`. Override
@@ -370,14 +375,19 @@ only when the optional dashboard/wiki is wanted.
 
 1. Keep each service root at the repository root and set the API
    config-as-code path to `/deploy/railway-api.json`. These configs use Railpack,
-   not the repository Dockerfile.
+   not the local Compose image at `/deploy/Dockerfile`. Keeping that Dockerfile
+   out of the repository root prevents Railway from selecting it instead of
+   Railpack.
 2. Set `DATABASE_URL`, a random `LORE_WORKSPACE_TOKEN` of at least 24 characters,
    and `LORE_WORKSPACE_ORGANIZATION`. Extractor and embedding provider
    variables are optional; without them Lore uses heuristic extraction and
-   lexical retrieval.
-3. The migration runs `CREATE EXTENSION IF NOT EXISTS vector`, so the
-   `DATABASE_URL` role must be allowed to create it. Railway supplies `PORT`.
-   Migrations run before deployment and readiness waits for PostgreSQL.
+   lexical retrieval. Set `AUTH_EMAIL_MODE=disabled` when deploying without the
+   dashboard.
+3. Provision Railway's pgvector PostgreSQL template; Railway's standard
+   PostgreSQL image does not include the required extension. The migration runs
+   `CREATE EXTENSION IF NOT EXISTS vector`, so the `DATABASE_URL` role must be
+   allowed to create it. Railway supplies `PORT`. Migrations run before
+   deployment and readiness waits for PostgreSQL.
 4. For a headless deployment, stop here, expose the API over HTTPS, and use its
    public URL for connectors, external hosts, and GitHub Actions. Do not create
    a web service.
@@ -386,8 +396,8 @@ only when the optional dashboard/wiki is wanted.
    `NUXT_PUBLIC_LORE_CONNECTOR_API_URL` to the public API HTTPS URL,
    `NUXT_AUTH_COOKIE_NAME=lore_session`, and
    `NUXT_AUTH_COOKIE_SECURE=true`. On the API service, set
-   `AUTH_EMAIL_MODE=resend`, `AUTH_WEB_ORIGIN` to the public web HTTPS origin,
-   `AUTH_EMAIL_FROM`, and `RESEND_API_KEY`.
+   `AUTH_EMAIL_MODE=resend`, set both `AUTH_WEB_ORIGIN` and `NUXT_ORIGIN` to the
+   public web HTTPS origin, and set `AUTH_EMAIL_FROM` and `RESEND_API_KEY`.
 6. After a public CLI release exists, set
    `NUXT_PUBLIC_LORE_INSTALL_URL` to the installer at an immutable release tag.
    Expose only the API and optional web services. Do not expose PostgreSQL.
@@ -716,7 +726,7 @@ expose. Native Claude/Codex resumed sessions, API-created Devin sessions, and
 the real three-agent chain were exercised successfully in a local credentialed
 run on August 13, 2026. Both GitHub provider review/correction paths also passed
 target-repository preflight using a packed current CLI artifact. Standalone
-release `v0.1.0` provides checksum-verified macOS and Linux binaries. The
+release `v0.1.1` provides checksum-verified macOS and Linux binaries. The
 private Devin hook prototype is not an installable plugin. Every live gate must
 still be rerun in the customer's environment.
 
@@ -997,6 +1007,6 @@ binary smoke; it does not run this complete manual checklist.
 - External model hosts need one-time host-bridge integration.
 - Delivery receipts prove context delivery, not that an LLM obeyed it.
 - Real-agent smoke suites require customer vendor credentials.
-- Standalone macOS and Linux binaries are available in GitHub release `v0.1.0`.
+- Standalone macOS and Linux binaries are available in GitHub release `v0.1.1`.
   The CLI, SDK, core, and generic adapter are available on npm.
 - Lore does not provide dream mode or company-wide search.

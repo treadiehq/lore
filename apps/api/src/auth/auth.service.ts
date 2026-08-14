@@ -2,6 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import {
   Inject,
   Injectable,
+  NotFoundException,
   ServiceUnavailableException,
   UnauthorizedException,
 } from "@nestjs/common";
@@ -28,11 +29,14 @@ import {
   type AuthUserRecord,
   type PostgresAuthRepository,
 } from "@lore-co/database";
+import {
+  apiDeploymentConfig,
+  type AuthEmailConfig,
+} from "../common/deployment-config.js";
 import { AUTH_REPOSITORY } from "../common/tokens.js";
 
 const INITIATION_LIMIT = 5;
 const INITIATION_WINDOW_MS = 15 * 60 * 1_000;
-const DEFAULT_MAGIC_LINK_TTL_MINUTES = 15;
 const DEFAULT_SESSION_TTL_DAYS = 30;
 
 interface InitiationWindow {
@@ -40,41 +44,7 @@ interface InitiationWindow {
   count: number;
 }
 
-type AuthEmailConfig =
-  | {
-      mode: "local";
-      webOrigin: string;
-      magicLinkTtlMs: number;
-    }
-  | {
-      mode: "resend";
-      webOrigin: string;
-      magicLinkTtlMs: number;
-      apiKey: string;
-      from: string;
-    };
-
-function requiredEnvironment(name: string): string {
-  const value = process.env[name]?.trim();
-  if (value === undefined || value === "") {
-    throw new Error(`${name} is required when AUTH_EMAIL_MODE=resend`);
-  }
-  return value;
-}
-
-function magicLinkTtlMs(): number {
-  const raw = process.env.AUTH_MAGIC_LINK_TTL_MINUTES?.trim();
-  if (raw === undefined || raw === "") {
-    return DEFAULT_MAGIC_LINK_TTL_MINUTES * 60 * 1_000;
-  }
-  const minutes = Number(raw);
-  if (!Number.isInteger(minutes) || minutes < 1 || minutes > 1_440) {
-    throw new Error(
-      "AUTH_MAGIC_LINK_TTL_MINUTES must be an integer from 1 to 1440",
-    );
-  }
-  return minutes * 60 * 1_000;
-}
+type EnabledAuthEmailConfig = Exclude<AuthEmailConfig, { mode: "disabled" }>;
 
 function sessionTtlMs(): number {
   const raw = process.env.AUTH_SESSION_TTL_DAYS?.trim();
@@ -88,49 +58,6 @@ function sessionTtlMs(): number {
     );
   }
   return days * 24 * 60 * 60 * 1_000;
-}
-
-function authEmailConfig(): AuthEmailConfig {
-  const mode = process.env.AUTH_EMAIL_MODE?.trim() || "local";
-  if (mode !== "local" && mode !== "resend") {
-    throw new Error('AUTH_EMAIL_MODE must be either "local" or "resend"');
-  }
-
-  const configuredOrigin = process.env.AUTH_WEB_ORIGIN?.trim();
-  const rawOrigin = configuredOrigin || "http://localhost:3002";
-  let origin: URL;
-  try {
-    origin = new URL(rawOrigin);
-  } catch {
-    throw new Error("AUTH_WEB_ORIGIN must be a valid HTTP(S) origin");
-  }
-  if (
-    (origin.protocol !== "http:" && origin.protocol !== "https:") ||
-    origin.username !== "" ||
-    origin.password !== "" ||
-    origin.pathname !== "/" ||
-    origin.search !== "" ||
-    origin.hash !== ""
-  ) {
-    throw new Error("AUTH_WEB_ORIGIN must be an HTTP(S) origin without a path");
-  }
-
-  if (mode === "resend" && origin.protocol !== "https:") {
-    throw new Error("AUTH_WEB_ORIGIN must use HTTPS with Resend delivery");
-  }
-
-  const base = {
-    webOrigin: origin.origin,
-    magicLinkTtlMs: magicLinkTtlMs(),
-  };
-  return mode === "local"
-    ? { mode, ...base }
-    : {
-        mode,
-        ...base,
-        apiKey: requiredEnvironment("RESEND_API_KEY"),
-        from: requiredEnvironment("AUTH_EMAIL_FROM"),
-      };
 }
 
 function acceptedResponse(): AuthInitiationResponse {
@@ -162,13 +89,25 @@ export class AuthService {
     @Inject(AUTH_REPOSITORY) repository: PostgresAuthRepository,
   ) {
     this.#repository = repository;
-    this.#emailConfig = authEmailConfig();
+    this.#emailConfig = apiDeploymentConfig().auth;
     this.#sessionTtlMs = sessionTtlMs();
     this.#bootstrapOrganization =
       process.env.LORE_WORKSPACE_ORGANIZATION?.trim() || undefined;
   }
 
+  assertEnabled(): void {
+    this.#enabledEmailConfig();
+  }
+
+  #enabledEmailConfig(): EnabledAuthEmailConfig {
+    if (this.#emailConfig.mode === "disabled") {
+      throw new NotFoundException("Not Found");
+    }
+    return this.#emailConfig;
+  }
+
   async signup(input: AuthSignupRequest): Promise<AuthInitiationResponse> {
+    this.assertEnabled();
     const signup = AuthSignupRequestSchema.parse(input);
     if (!this.#allowInitiation(signup.email)) {
       return acceptedResponse();
@@ -187,6 +126,7 @@ export class AuthService {
   }
 
   async login(input: AuthLoginRequest): Promise<AuthInitiationResponse> {
+    this.assertEnabled();
     const login = AuthLoginRequestSchema.parse(input);
     if (!this.#allowInitiation(login.email)) {
       return acceptedResponse();
@@ -201,6 +141,7 @@ export class AuthService {
   }
 
   async verify(input: AuthVerifyRequest): Promise<AuthVerifyResponse> {
+    this.assertEnabled();
     const verification = AuthVerifyRequestSchema.parse(input);
     const sessionToken = createOpaqueToken();
     const session = await this.#repository.verifyMagicLink({
@@ -216,12 +157,14 @@ export class AuthService {
   }
 
   session(workspace: AuthenticatedWorkspace): AuthSessionResponse {
+    this.assertEnabled();
     return AuthSessionResponseSchema.parse({
       session: this.#requireSessionProfile(workspace),
     });
   }
 
   async logout(workspace: AuthenticatedWorkspace): Promise<void> {
+    this.assertEnabled();
     this.#requireSessionProfile(workspace);
     await this.#repository.revokeSession(workspace.tokenId);
   }
@@ -251,13 +194,14 @@ export class AuthService {
     user: AuthUserRecord,
     showConnectorOnboarding: boolean,
   ): Promise<void> {
+    const emailConfig = this.#enabledEmailConfig();
     const token = createOpaqueToken();
     const magicLinkId = randomUUID();
     await this.#repository.issueMagicLink({
       id: magicLinkId,
       userId: user.userId,
       tokenHash: hashAuthToken(token),
-      expiresAt: new Date(Date.now() + this.#emailConfig.magicLinkTtlMs),
+      expiresAt: new Date(Date.now() + emailConfig.magicLinkTtlMs),
     });
 
     try {
@@ -283,14 +227,15 @@ export class AuthService {
     token: string,
     showConnectorOnboarding: boolean,
   ): Promise<void> {
-    const verifyUrl = new URL("/auth/verify", this.#emailConfig.webOrigin);
+    const emailConfig = this.#enabledEmailConfig();
+    const verifyUrl = new URL("/auth/verify", emailConfig.webOrigin);
     const fragment = new URLSearchParams({ token });
     if (showConnectorOnboarding) {
       fragment.set("onboarding", "connect");
     }
     verifyUrl.hash = fragment.toString();
     const link = verifyUrl.toString();
-    if (this.#emailConfig.mode === "local") {
+    if (emailConfig.mode === "local") {
       process.stdout.write(`[Lore auth] Magic link for ${email}: ${link}\n`);
       return;
     }
@@ -299,11 +244,11 @@ export class AuthService {
     const response = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: {
-        authorization: `Bearer ${this.#emailConfig.apiKey}`,
+        authorization: `Bearer ${emailConfig.apiKey}`,
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        from: this.#emailConfig.from,
+        from: emailConfig.from,
         to: [email],
         subject: showConnectorOnboarding
           ? "Activate your Lore workspace"

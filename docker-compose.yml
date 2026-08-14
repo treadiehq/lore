@@ -22,6 +22,7 @@ services:
   migrate:
     build:
       context: .
+      dockerfile: deploy/Dockerfile
       target: api
     command:
       - ./node_modules/.bin/drizzle-kit
@@ -38,8 +39,10 @@ services:
   api:
     build:
       context: .
+      dockerfile: deploy/Dockerfile
       target: api
     environment:
+      NODE_ENV: development
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/lore
       API_HOST: 0.0.0.0
       API_PORT: 3001
@@ -97,6 +100,7 @@ services:
   web:
     build:
       context: .
+      dockerfile: deploy/Dockerfile
       target: web
     environment:
       HOST: 0.0.0.0

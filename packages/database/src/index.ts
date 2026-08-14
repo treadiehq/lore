@@ -225,7 +225,7 @@ function activeScopeConditions(
           isNull(memories.path),
           ...paths.map(
             (path) =>
-              sql`(${path} = ${memories.path} OR ${path} LIKE (${memories.path} || '/%'))`,
+              sql`(${path} = ${memories.path} OR left(${path}, length(${memories.path}) + 1) = (${memories.path} || '/'))`,
           ),
         ) as SQL),
     components.length === 0

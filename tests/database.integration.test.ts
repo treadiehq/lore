@@ -175,6 +175,48 @@ describe.skipIf(!databaseTestsEnabled)(
       });
     });
 
+    it("treats path scope wildcard characters literally", async () => {
+      const repository = new PostgresMemoryRepository(connection);
+      const engine = new SharedMemoryEngine({
+        repository,
+        extractor: new HeuristicMemoryExtractor(),
+        retriever: new ScopedKeywordMemoryRetriever(repository),
+      });
+      const scopedMemories = await Promise.all(
+        ["src_test_api", "src%api", "src\\api"].map((path) =>
+          engine.remember({
+            content: `Convention for ${path}.`,
+            scope: { repo: "test-repo", path },
+            category: "convention",
+            source: { agent: "human", sessionId: "path-scope-test" },
+          }),
+        ),
+      );
+
+      await expect(
+        repository.findActiveScopeCandidates(
+          { repo: "test-repo" },
+          {
+            paths: [
+              "srcXtestYapi/handlers.ts",
+              "srcanythingapi/handlers.ts",
+              "srcapi/handlers.ts",
+            ],
+          },
+        ),
+      ).resolves.toEqual([]);
+
+      for (const scopedMemory of scopedMemories) {
+        const path = scopedMemory.memory.scope.path!;
+        await expect(
+          repository.findActiveScopeCandidates(
+            { repo: "test-repo" },
+            { paths: [`${path}/handlers.ts`] },
+          ),
+        ).resolves.toMatchObject([{ id: scopedMemory.memory.id }]);
+      }
+    });
+
     it("stores pgvector embeddings and prevents semantic cross-workspace retrieval", async () => {
       const extension = await connection.client`
         SELECT extname FROM pg_extension WHERE extname = 'vector'

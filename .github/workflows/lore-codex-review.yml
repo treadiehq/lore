@@ -16,7 +16,7 @@ jobs:
       contents: read
     env:
       LORE_CLI_REPOSITORY: ${{ vars.LORE_CLI_REPOSITORY || 'treadiehq/lore' }}
-      LORE_CLI_VERSION: ${{ vars.LORE_CLI_VERSION || 'v0.1.0' }}
+      LORE_CLI_VERSION: ${{ vars.LORE_CLI_VERSION || 'v0.1.1' }}
     outputs:
       final-message: ${{ steps.codex.outputs.final-message }}
     steps:
@@ -72,7 +72,7 @@ jobs:
       pull-requests: write
     env:
       LORE_CLI_REPOSITORY: ${{ vars.LORE_CLI_REPOSITORY || 'treadiehq/lore' }}
-      LORE_CLI_VERSION: ${{ vars.LORE_CLI_VERSION || 'v0.1.0' }}
+      LORE_CLI_VERSION: ${{ vars.LORE_CLI_VERSION || 'v0.1.1' }}
     steps:
       - uses: actions/checkout@v5
         with:

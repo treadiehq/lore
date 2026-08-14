@@ -11,6 +11,7 @@ import type {
   PostgresAuthRepository,
 } from "@lore-co/database";
 import { AuthService } from "../apps/api/src/auth/auth.service.js";
+import { apiDeploymentConfig } from "../apps/api/src/common/deployment-config.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 afterEach(() => {
@@ -70,10 +71,88 @@ describe("passwordless auth contracts", () => {
   });
 });
 
+describe("deployment auth configuration", () => {
+  it("disables browser authentication by default", () => {
+    expect(apiDeploymentConfig({})).toEqual({
+      auth: { mode: "disabled" },
+      corsOrigins: [],
+    });
+  });
+
+  it("rejects local magic-link logging in production", () => {
+    expect(() =>
+      apiDeploymentConfig({
+        NODE_ENV: "production",
+        AUTH_EMAIL_MODE: "local",
+      }),
+    ).toThrow("AUTH_EMAIL_MODE=local is not allowed in production");
+  });
+
+  it("requires matching HTTPS dashboard origins", () => {
+    expect(() =>
+      apiDeploymentConfig({
+        NODE_ENV: "production",
+        AUTH_EMAIL_MODE: "resend",
+        AUTH_WEB_ORIGIN: "https://lore.example.com",
+        NUXT_ORIGIN: "https://other.example.com",
+        AUTH_EMAIL_FROM: "Lore <auth@example.com>",
+        RESEND_API_KEY: "resend-test-key",
+      }),
+    ).toThrow("NUXT_ORIGIN must include AUTH_WEB_ORIGIN");
+  });
+
+  it("requires an explicit dashboard CORS origin in Resend mode", () => {
+    expect(() =>
+      apiDeploymentConfig({
+        NODE_ENV: "production",
+        AUTH_EMAIL_MODE: "resend",
+        AUTH_WEB_ORIGIN: "https://lore.example.com",
+        AUTH_EMAIL_FROM: "Lore <auth@example.com>",
+        RESEND_API_KEY: "resend-test-key",
+      }),
+    ).toThrow("NUXT_ORIGIN is required when AUTH_EMAIL_MODE=resend");
+  });
+
+  it("accepts an aligned production dashboard origin", () => {
+    expect(
+      apiDeploymentConfig({
+        NODE_ENV: "production",
+        AUTH_EMAIL_MODE: "resend",
+        AUTH_WEB_ORIGIN: "https://lore.example.com",
+        NUXT_ORIGIN: "https://lore.example.com",
+        AUTH_EMAIL_FROM: "Lore <auth@example.com>",
+        RESEND_API_KEY: "resend-test-key",
+      }),
+    ).toMatchObject({
+      auth: {
+        mode: "resend",
+        webOrigin: "https://lore.example.com",
+      },
+      corsOrigins: ["https://lore.example.com"],
+    });
+  });
+});
+
 describe("passwordless email delivery", () => {
+  it("returns not found without creating state when auth is disabled", async () => {
+    vi.stubEnv("AUTH_EMAIL_MODE", "disabled");
+    const repository = {
+      findUserByEmail: vi.fn(),
+      issueMagicLink: vi.fn(),
+    } as unknown as PostgresAuthRepository;
+
+    const service = new AuthService(repository);
+    await expect(
+      service.login({ email: "owner@example.com" }),
+    ).rejects.toThrow("Not Found");
+    expect(repository.findUserByEmail).not.toHaveBeenCalled();
+    expect(repository.issueMagicLink).not.toHaveBeenCalled();
+  });
+
   it("sends a hashed, one-time link through Resend in production mode", async () => {
     vi.stubEnv("AUTH_EMAIL_MODE", "resend");
     vi.stubEnv("AUTH_WEB_ORIGIN", "https://lore.example.com");
+    vi.stubEnv("NUXT_ORIGIN", "https://lore.example.com");
     vi.stubEnv("AUTH_EMAIL_FROM", "Lore <auth@example.com>");
     vi.stubEnv("RESEND_API_KEY", "resend-test-key");
     const fetchMock = vi.fn(async () => new Response(null, { status: 200 }));

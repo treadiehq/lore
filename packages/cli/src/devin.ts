@@ -606,10 +606,14 @@ async function runReview(args: readonly string[]): Promise<void> {
     structuredOutputRequired: true,
     structuredOutputSchema: REVIEW_OUTPUT_SCHEMA,
   });
-  metadata.sessionId = created.session_id;
-  await writeFile(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`, "utf8");
 
   try {
+    metadata.sessionId = created.session_id;
+    await writeFile(
+      metadataPath,
+      `${JSON.stringify(metadata, null, 2)}\n`,
+      "utf8",
+    );
     const completed = await client.waitForCompletion(
       created.session_id,
       integerFlag(

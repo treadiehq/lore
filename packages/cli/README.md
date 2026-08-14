@@ -162,10 +162,10 @@ Devin Review API cannot accept dynamic Lore context. Reviews run only for
 same-repository, non-draft pull requests bearing the corresponding
 `lore:codex-review` or `lore:devin-review` label.
 
-Generated jobs require a published standalone binary release. No public binary
-release exists yet, so the generated defaults cannot currently install Lore.
-After release, set `LORE_CLI_REPOSITORY` to its publicly readable
-`owner/repository` and `LORE_CLI_VERSION` to an existing release tag.
+Generated jobs require a published standalone binary release and default to
+`treadiehq/lore` at `v0.1.1`. Set `LORE_CLI_REPOSITORY` to the publicly
+readable `owner/repository` and `LORE_CLI_VERSION` to an existing release tag
+when using another release source.
 
 The workflows require secret `LORE_WORKSPACE_TOKEN` and variable
 `LORE_API_URL`. Codex additionally requires secret `OPENAI_API_KEY`. Devin

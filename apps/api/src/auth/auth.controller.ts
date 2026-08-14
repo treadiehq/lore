@@ -6,6 +6,7 @@ import {
   HttpStatus,
   Post,
   Req,
+  UseGuards,
 } from "@nestjs/common";
 import {
   AuthLoginRequestSchema,
@@ -26,8 +27,10 @@ import {
   type WorkspaceHttpRequest,
 } from "../common/request-context.js";
 import { ZodValidationPipe } from "../common/zod-validation.pipe.js";
+import { AuthEnabledGuard } from "./auth-enabled.guard.js";
 import { AuthService } from "./auth.service.js";
 
+@UseGuards(AuthEnabledGuard)
 @Controller("v1/auth")
 export class AuthController {
   readonly #service: AuthService;

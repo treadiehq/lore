@@ -8,7 +8,7 @@
     "preDeployCommand": [
       "pnpm --filter @lore-co/database db:migrate"
     ],
-    "startCommand": "node apps/api/dist/main.js",
+    "startCommand": "NODE_ENV=production node apps/api/dist/main.js",
     "healthcheckPath": "/health/ready",
     "healthcheckTimeout": 120,
     "restartPolicyType": "ON_FAILURE",

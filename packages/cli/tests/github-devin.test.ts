@@ -280,4 +280,60 @@ describe("Devin review connector", () => {
       '"sessionId": "devin-test"',
     );
   });
+
+  it("archives the session when persisting its metadata fails", async () => {
+    const root = await temporaryDirectory();
+    const prompt = resolve(root, "prompt.md");
+    const metadata = resolve(root, "metadata.json");
+    const output = resolve(root, "output.json");
+    await Promise.all([
+      writeFile(prompt, "Review this pull request.", "utf8"),
+      writeFile(
+        metadata,
+        JSON.stringify({
+          provider: "devin",
+          repository: "acme/api",
+          owner: "acme",
+          repo: "api",
+          prNumber: 42,
+          prUrl: "https://github.com/acme/api/pull/42",
+          headSha: "abc123",
+          marker: "pending",
+        }),
+        "utf8",
+      ),
+    ]);
+    process.env.DEVIN_API_KEY = "cog_test";
+    process.env.DEVIN_ORG_ID = "org-test";
+    const methods: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input, init) => {
+        methods.push(init?.method ?? "GET");
+        if (init?.method === "POST") {
+          await rm(root, { recursive: true, force: true });
+          return Response.json({
+            session_id: "devin-test",
+            url: "https://app.devin.ai/sessions/devin-test",
+            status: "running",
+          });
+        }
+        return new Response(null, { status: 204 });
+      }),
+    );
+
+    await expect(
+      runDevinCommand([
+        "run-review",
+        "--prompt",
+        prompt,
+        "--metadata",
+        metadata,
+        "--output",
+        output,
+      ]),
+    ).rejects.toThrow(/ENOENT/u);
+
+    expect(methods).toEqual(["POST", "DELETE"]);
+  });
 });
