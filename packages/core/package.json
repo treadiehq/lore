@@ -1,6 +1,6 @@
 {
   "name": "@lore-co/core",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Schemas and primitives for auditable Lore engineering memory",
   "type": "module",
   "main": "./dist/index.js",

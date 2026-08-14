@@ -22,7 +22,7 @@ declare const __LORE_STANDALONE__: boolean | undefined;
 const RUNTIME_VERSION =
   typeof __LORE_VERSION__ === "string" && __LORE_VERSION__ !== ""
     ? __LORE_VERSION__
-    : "0.1.1";
+    : "0.1.2";
 const IS_STANDALONE_RUNTIME =
   typeof __LORE_STANDALONE__ === "boolean" && __LORE_STANDALONE__;
 
