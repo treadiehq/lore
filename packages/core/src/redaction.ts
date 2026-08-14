@@ -62,6 +62,9 @@ const RULES: readonly RedactionRule[] = [
   },
 ];
 
+const SENSITIVE_KEY_PATTERN =
+  /^(?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|passwd|secret|token)$/iu;
+
 export function redactSensitiveText(value: string): RedactionResult {
   let text = value;
   const findings: RedactionFinding[] = [];
@@ -121,7 +124,17 @@ export function redactUnknown(value: unknown): {
       return current.map(visit);
     }
     return Object.fromEntries(
-      Object.entries(current).map(([key, entry]) => [key, visit(entry)]),
+      Object.entries(current).map(([key, entry]) => {
+        if (
+          SENSITIVE_KEY_PATTERN.test(key) &&
+          entry !== null &&
+          entry !== undefined
+        ) {
+          findings.set("credential", (findings.get("credential") ?? 0) + 1);
+          return [key, "[REDACTED:CREDENTIAL]"];
+        }
+        return [key, visit(entry)];
+      }),
     );
   };
 

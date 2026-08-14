@@ -5,7 +5,9 @@ import {
   NotFoundException,
 } from "@nestjs/common";
 import {
+  MemoryUpdateSchema,
   SharedMemoryEngine,
+  redactUnknown,
   type AuthenticatedWorkspace,
   type CorrectMemoryDto,
   type CorrectMemoryResponse,
@@ -94,6 +96,9 @@ export class MemoryService {
               organization: workspace.organization,
             },
           },
+      workspace === undefined
+        ? undefined
+        : { workspaceId: workspace.workspaceId },
     );
   }
 
@@ -101,11 +106,16 @@ export class MemoryService {
     id: string,
     workspace?: AuthenticatedWorkspace,
   ): Promise<GetMemoryResponse> {
-    const result = await this.#engine.getMemory(id);
+    const result = await this.#engine.getMemory(
+      id,
+      workspace === undefined
+        ? undefined
+        : { workspaceId: workspace.workspaceId },
+    );
     if (
       result.memory === null ||
       (workspace !== undefined &&
-        result.memory.scope.organization !== workspace.organization)
+        result.memory.workspaceId !== workspace.workspaceId)
     ) {
       throw new NotFoundException(`Memory not found: ${id}`);
     }
@@ -118,14 +128,12 @@ export class MemoryService {
     workspace?: AuthenticatedWorkspace,
   ): Promise<UpdateMemoryResponse> {
     try {
-      const current = await this.#repository.get(id);
+      const context =
+        workspace === undefined
+          ? undefined
+          : { workspaceId: workspace.workspaceId };
+      const current = await this.#repository.get(id, context);
       if (current === null) {
-        throw new NotFoundException(`Memory not found: ${id}`);
-      }
-      if (
-        workspace !== undefined &&
-        current.scope.organization !== workspace.organization
-      ) {
         throw new NotFoundException(`Memory not found: ${id}`);
       }
       if (current.status !== "active") {
@@ -133,17 +141,27 @@ export class MemoryService {
           `Only active memories can be edited: ${id} is ${current.status}`,
         );
       }
+      const redaction = redactUnknown(update);
+      const redactedUpdate = MemoryUpdateSchema.parse(redaction.value);
+      const safeUpdate =
+        redactedUpdate.source === undefined || !redaction.redacted
+          ? redactedUpdate
+          : {
+              ...redactedUpdate,
+              source: { ...redactedUpdate.source, redacted: true },
+            };
       const memory = await this.#repository.update(
         id,
-        workspace === undefined || update.scope === undefined
-          ? update
+        workspace === undefined || safeUpdate.scope === undefined
+          ? safeUpdate
           : {
-              ...update,
+              ...safeUpdate,
               scope: {
-                ...update.scope,
+                ...safeUpdate.scope,
                 organization: workspace.organization,
               },
             },
+        context,
       );
       if (memory === null) {
         throw new NotFoundException(`Memory not found: ${id}`);
@@ -185,7 +203,12 @@ export class MemoryService {
               }),
         };
       }
-      const result = await this.#engine.correct(tenantInput);
+      const result = await this.#engine.correct(
+        tenantInput,
+        workspace === undefined
+          ? undefined
+          : { workspaceId: workspace.workspaceId },
+      );
       await this.#indexer.indexMemories([result.memory]);
       return result;
     } catch (error) {
@@ -215,7 +238,12 @@ export class MemoryService {
       if (workspace !== undefined) {
         await this.get(id, workspace);
       }
-      return await this.#engine.forget(id);
+      return await this.#engine.forget(
+        id,
+        workspace === undefined
+          ? undefined
+          : { workspaceId: workspace.workspaceId },
+      );
     } catch (error) {
       throwMappedMemoryError(error);
     }

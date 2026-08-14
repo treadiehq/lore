@@ -41,7 +41,12 @@ const connectorCommand = computed(() => {
     "",
   );
   const installUrl = String(runtimeConfig.public.loreInstallUrl);
-  return `export LORE_BIN_DIR="\${LORE_BIN_DIR:-$HOME/.local/bin}"; curl -fsSL ${shellQuote(installUrl)} | bash && "$LORE_BIN_DIR/lore" connect --url ${shellQuote(apiUrl)} --token ${shellQuote(createdToken.value.token)} && "$LORE_BIN_DIR/lore" doctor`;
+  const dashboardUrl = import.meta.client ? window.location.origin : "";
+  const dashboardOption =
+    dashboardUrl === ""
+      ? ""
+      : ` --dashboard-url ${shellQuote(dashboardUrl)}`;
+  return `export LORE_BIN_DIR="\${LORE_BIN_DIR:-$HOME/.local/bin}"; curl -fsSL ${shellQuote(installUrl)} | bash && "$LORE_BIN_DIR/lore" connect --url ${shellQuote(apiUrl)}${dashboardOption} --token ${shellQuote(createdToken.value.token)} && "$LORE_BIN_DIR/lore" doctor`;
 });
 
 function shellQuote(value: string): string {

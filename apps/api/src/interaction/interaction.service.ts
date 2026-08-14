@@ -149,7 +149,19 @@ export class InteractionService {
         sessionId: sanitized.sessionId,
         messages: sanitized.messages,
       });
-      const observed = await this.#engine.observe(interaction);
+      const nativeLearningWithoutRepository =
+        sanitized.connector === "lore-cli" &&
+        (sanitized.agent === "claude" || sanitized.agent === "codex") &&
+        sanitized.learningScope.repo === undefined;
+      const observed = nativeLearningWithoutRepository
+        ? {
+            memories: [],
+            created: 0,
+            duplicates: 0,
+            reconciled: 0,
+            superseded: 0,
+          }
+        : await this.#engine.observe(interaction);
       await this.#indexer.indexMemories(observed.memories);
 
       const userMessages = sanitized.messages.filter(

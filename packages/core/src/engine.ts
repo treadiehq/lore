@@ -36,6 +36,7 @@ import type {
   MemoryExtractor,
   MemoryRepository,
   MemoryRetriever,
+  RepositoryContext,
 } from "./ports.js";
 
 export interface SharedMemoryEngineDependencies {
@@ -148,6 +149,7 @@ function createMemory(input: {
     supersedesMemoryId,
     createdAt: timestamp,
     updatedAt: timestamp,
+    suppressedAt: null,
     deletedAt: null,
   });
 }
@@ -405,6 +407,9 @@ export class SharedMemoryEngine {
         const result = await this.#repository.supersede(
           supersedesMemoryId,
           memory,
+          interaction.workspaceId === undefined
+            ? undefined
+            : { workspaceId: interaction.workspaceId },
         );
         stored.push(result.memory);
         if (result.memory.id === memory.id) {
@@ -431,7 +436,11 @@ export class SharedMemoryEngine {
     context?: { workspaceId?: string },
   ): Promise<GetContextResponse> {
     const task = AgentTaskSchema.parse(taskInput);
-    return { memories: await this.#retriever.retrieve(task, context) };
+    const hits = await this.#retriever.retrieve(task, context);
+    return {
+      memories: hits.map((hit) => hit.memory),
+      hits,
+    };
   }
 
   async remember(input: CreateMemoryDto): Promise<RememberResponse> {
@@ -463,40 +472,62 @@ export class SharedMemoryEngine {
     );
   }
 
-  async correct(input: CorrectMemoryDto): Promise<CorrectMemoryResponse> {
+  async correct(
+    input: CorrectMemoryDto,
+    context: RepositoryContext = {},
+  ): Promise<CorrectMemoryResponse> {
     const value = CorrectMemoryDtoSchema.parse(input);
-    const current = await this.#repository.get(value.memoryId);
+    const current = await this.#repository.get(value.memoryId, context);
     if (current === null) {
       throw new Error(`Memory not found: ${value.memoryId}`);
     }
-    if (current.status !== "active") {
+    if (current.status !== "active" && current.status !== "suppressed") {
       throw new Error(
-        `Only active memories can be corrected: ${value.memoryId} is ${current.status}`,
+        `Only active or suppressed memories can be corrected: ${value.memoryId} is ${current.status}`,
       );
     }
 
+    const content = redactSensitiveText(value.content);
+    const requestedSource = value.source ?? current.source;
+    const rawText =
+      requestedSource.rawText === undefined ||
+      requestedSource.rawText === null
+        ? undefined
+        : redactSensitiveText(requestedSource.rawText);
+    const source = {
+      ...requestedSource,
+      ...(rawText === undefined ? {} : { rawText: rawText.text }),
+      ...((content.redacted || rawText?.redacted) === true
+        ? { redacted: true }
+        : {}),
+    };
     const replacement = createMemory({
       ...(current.workspaceId === undefined
         ? {}
         : { workspaceId: current.workspaceId }),
-      content: redactSensitiveText(value.content).text,
+      content: content.text,
       scope: value.scope ?? current.scope,
       category: value.category ?? "correction",
-      source: value.source ?? current.source,
+      source,
       confidence: 1,
       confirmation: "explicit",
       supersedesMemoryId: current.id,
     });
-    return this.#repository.supersede(current.id, replacement);
+    return this.#repository.supersede(current.id, replacement, context);
   }
 
   async forget(
     input: ForgetMemoryDto | string,
+    context: RepositoryContext = {},
   ): Promise<ForgetMemoryResponse> {
     const value = ForgetMemoryDtoSchema.parse(
       typeof input === "string" ? { id: input } : input,
     );
-    const memory = await this.#repository.softDelete(value.id);
+    const memory = await this.#repository.softDelete(
+      value.id,
+      undefined,
+      context,
+    );
     if (memory === null) {
       throw new Error(`Memory not found: ${value.id}`);
     }
@@ -505,15 +536,19 @@ export class SharedMemoryEngine {
 
   async listMemories(
     input: ListMemoriesDto = {},
+    context: RepositoryContext = {},
   ): Promise<ListMemoriesResponse> {
-    return this.#repository.list(ListMemoriesDtoSchema.parse(input));
+    return this.#repository.list(ListMemoriesDtoSchema.parse(input), context);
   }
 
-  async getMemory(input: GetMemoryDto | string): Promise<GetMemoryResponse> {
+  async getMemory(
+    input: GetMemoryDto | string,
+    context: RepositoryContext = {},
+  ): Promise<GetMemoryResponse> {
     const value = GetMemoryDtoSchema.parse(
       typeof input === "string" ? { id: input } : input,
     );
-    return { memory: await this.#repository.get(value.id) };
+    return { memory: await this.#repository.get(value.id, context) };
   }
 }
 

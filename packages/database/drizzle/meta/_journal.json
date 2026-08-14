@@ -57,6 +57,13 @@
       "when": 1786632805483,
       "tag": "0007_simple_sebastian_shaw",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1786739999219,
+      "tag": "0008_keen_millenium_guard",
+      "breakpoints": true
     }
   ]
 }

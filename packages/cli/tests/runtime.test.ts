@@ -1,4 +1,5 @@
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -89,7 +90,7 @@ describe("native hook runtime", () => {
       agent: "claude",
       sessionId: "fresh-session",
       scope: { repo: "project" },
-      learningScope: {},
+      learningScope: { repo: "project" },
       task: "Always use AccountStore for accounts.",
       messages: [
         {
@@ -113,6 +114,141 @@ describe("native hook runtime", () => {
     expect(
       (requests[1]?.body as { eventId?: string }).eventId,
     ).not.toBe((requests[0]?.body as { eventId?: string }).eventId);
+  });
+
+  it("collects rename-aware bounded file evidence and narrows learning scope", async () => {
+    const home = await configuredHome();
+    const repository = await mkdtemp(resolve(tmpdir(), "lore-runtime-repo-"));
+    homes.push(repository);
+    await mkdir(resolve(repository, "src"), { recursive: true });
+    await writeFile(resolve(repository, "src", "old.ts"), "export const value = 1;\n");
+    execFileSync("git", ["init", "-q", "--template="], { cwd: repository });
+    execFileSync("git", ["config", "user.email", "lore@example.invalid"], {
+      cwd: repository,
+    });
+    execFileSync("git", ["config", "user.name", "Lore Test"], {
+      cwd: repository,
+    });
+    execFileSync("git", ["add", "."], { cwd: repository });
+    execFileSync("git", ["commit", "-qm", "fixture"], { cwd: repository });
+    execFileSync("git", ["mv", "src/old.ts", "src/new.ts"], {
+      cwd: repository,
+    });
+
+    const requests: unknown[] = [];
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      requests.push(JSON.parse(String(init?.body)) as unknown);
+      return String(url).endsWith("/v1/observations")
+        ? Response.json({
+            event: {},
+            replayed: false,
+            memories: [],
+            created: 0,
+            duplicates: 0,
+            reconciled: 0,
+            superseded: 0,
+          })
+        : Response.json({ context: "", hits: [] });
+    });
+
+    await handleHookEvent(
+      {
+        session_id: "renamed-session",
+        hook_event_name: "UserPromptSubmit",
+        cwd: repository,
+        prompt: "Use the new file convention.",
+      },
+      "claude",
+      { home, fetch: fetchMock as typeof fetch },
+    );
+
+    expect(requests[0]).toMatchObject({
+      scope: { repo: expect.stringMatching(/^lore-runtime-repo-/u) },
+      learningScope: {
+        repo: expect.stringMatching(/^lore-runtime-repo-/u),
+        path: "src/new.ts",
+      },
+      files: ["src/new.ts"],
+      diff: expect.stringContaining("rename from src/old.ts"),
+    });
+    expect(requests[1]).toMatchObject({
+      task: {
+        files: ["src/new.ts"],
+        diff: expect.stringContaining("rename to src/new.ts"),
+      },
+    });
+  });
+
+  it("shows an exact receipt link for non-empty injection and stays silent otherwise", async () => {
+    const home = await configuredHome();
+    const configPath = resolve(home, ".lore", "config.json");
+    const config = JSON.parse(await readFile(configPath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        ...config,
+        dashboardUrl: "https://app.lore.example.test",
+      }),
+    );
+    const memory = {
+      id: "33333333-3333-4333-8333-333333333333",
+      content: "Account writes must use AccountStore.",
+    };
+    let deliveryCount = 0;
+    const fetchMock = vi.fn(async (url: string | URL) => {
+      if (String(url).endsWith("/v1/observations")) {
+        return Response.json({
+          event: {},
+          replayed: false,
+          memories: [],
+          created: 0,
+          duplicates: 0,
+        });
+      }
+      deliveryCount += 1;
+      return deliveryCount === 1
+        ? Response.json({
+            context: "Use AccountStore.",
+            hits: [{ memory, reasons: ["repository", "lexical"] }],
+            receipt: {
+              id: "55555555-5555-4555-8555-555555555555",
+            },
+          })
+        : Response.json({ context: "", hits: [], receipt: { id: "empty" } });
+    });
+
+    const injected = await handleHookEvent(
+      {
+        session_id: "receipt-session",
+        hook_event_name: "UserPromptSubmit",
+        cwd: "/work/project",
+        prompt: "Update account writes with AccountStore.",
+      },
+      "codex",
+      { home, fetch: fetchMock as typeof fetch },
+    );
+    expect(injected?.systemMessage).toContain(
+      "Lore taught Codex: Account writes must use AccountStore.",
+    );
+    expect(injected?.systemMessage).toContain("Why: repository, lexical");
+    expect(injected?.systemMessage).toContain(
+      "https://app.lore.example.test/receipts/55555555-5555-4555-8555-555555555555",
+    );
+
+    const silent = await handleHookEvent(
+      {
+        session_id: "silent-session",
+        hook_event_name: "UserPromptSubmit",
+        cwd: "/work/project",
+        prompt: "Unrelated task.",
+      },
+      "codex",
+      { home, fetch: fetchMock as typeof fetch },
+    );
+    expect(silent).toBeUndefined();
   });
 
   it("pairs Stop with the next prompt and returns hook JSON", async () => {
@@ -177,7 +313,7 @@ describe("native hook runtime", () => {
       connector: "lore-cli",
       agent: "codex",
       sessionId: "session-1",
-      learningScope: {},
+      learningScope: { repo: "project" },
       previousAssistant: {
         content: "Use token [REDACTED_API_KEY] in code.",
         id: "turn-1",

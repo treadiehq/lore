@@ -12,12 +12,21 @@ import {
 import type {
   FindActiveCandidatesOptions,
   MemoryRepository,
+  RepositoryContext,
   SupersedeMemoryResult,
 } from "./ports.js";
 import { createMemoryFingerprint } from "./engine.js";
 
 function copyMemory(memory: Memory): Memory {
   return structuredClone(memory);
+}
+
+function fingerprintKey(memory: Memory): string {
+  return `${memory.workspaceId ?? memory.source.workspaceId ?? ""}\0${memory.fingerprint}`;
+}
+
+function reservesFingerprint(memory: Memory): boolean {
+  return memory.status === "active" || memory.status === "suppressed";
 }
 
 function scopeValueMatches(
@@ -52,23 +61,23 @@ export class InMemoryMemoryRepository implements MemoryRepository {
     for (const initialMemory of initialMemories) {
       const memory = MemorySchema.parse(initialMemory);
       if (
-        memory.status === "active" &&
-        this.#fingerprints.has(memory.fingerprint)
+        reservesFingerprint(memory) &&
+        this.#fingerprints.has(fingerprintKey(memory))
       ) {
         throw new Error(
           `Duplicate initial memory fingerprint: ${memory.fingerprint}`,
         );
       }
       this.#memories.set(memory.id, copyMemory(memory));
-      if (memory.status === "active") {
-        this.#fingerprints.set(memory.fingerprint, memory.id);
+      if (reservesFingerprint(memory)) {
+        this.#fingerprints.set(fingerprintKey(memory), memory.id);
       }
     }
   }
 
   async insert(memoryInput: Memory): Promise<InsertMemoryResult> {
     const memory = MemorySchema.parse(memoryInput);
-    const existingId = this.#fingerprints.get(memory.fingerprint);
+    const existingId = this.#fingerprints.get(fingerprintKey(memory));
     if (existingId !== undefined) {
       const existing = this.#memories.get(existingId);
       if (existing === undefined) {
@@ -82,16 +91,23 @@ export class InMemoryMemoryRepository implements MemoryRepository {
     }
 
     this.#memories.set(memory.id, copyMemory(memory));
-    this.#fingerprints.set(memory.fingerprint, memory.id);
+    this.#fingerprints.set(fingerprintKey(memory), memory.id);
     return { memory: copyMemory(memory), inserted: true };
   }
 
-  async get(id: string): Promise<Memory | null> {
+  async get(id: string, context: RepositoryContext = {}): Promise<Memory | null> {
     const memory = this.#memories.get(id);
-    return memory === undefined ? null : copyMemory(memory);
+    return memory === undefined ||
+      (context.workspaceId !== undefined &&
+        memory.workspaceId !== context.workspaceId)
+      ? null
+      : copyMemory(memory);
   }
 
-  async list(input: ListMemoriesDto = {}): Promise<ListMemoriesResponse> {
+  async list(
+    input: ListMemoriesDto = {},
+    context: RepositoryContext = {},
+  ): Promise<ListMemoriesResponse> {
     const filters = ListMemoriesDtoSchema.parse(input);
     const categories = toArray(filters.category);
     const statuses = toArray(filters.status);
@@ -101,6 +117,12 @@ export class InMemoryMemoryRepository implements MemoryRepository {
 
     const matching = [...this.#memories.values()]
       .filter((memory) => {
+        if (
+          context.workspaceId !== undefined &&
+          memory.workspaceId !== context.workspaceId
+        ) {
+          return false;
+        }
         if (
           filters.scope !== undefined &&
           !memoryScopeAppliesTo(filters.scope, memory.scope)
@@ -135,9 +157,17 @@ export class InMemoryMemoryRepository implements MemoryRepository {
     };
   }
 
-  async update(id: string, updateInput: MemoryUpdate): Promise<Memory | null> {
+  async update(
+    id: string,
+    updateInput: MemoryUpdate,
+    context: RepositoryContext = {},
+  ): Promise<Memory | null> {
     const current = this.#memories.get(id);
-    if (current === undefined) {
+    if (
+      current === undefined ||
+      (context.workspaceId !== undefined &&
+        current.workspaceId !== context.workspaceId)
+    ) {
       return null;
     }
 
@@ -174,19 +204,19 @@ export class InMemoryMemoryRepository implements MemoryRepository {
       fingerprint,
       updatedAt: update.updatedAt ?? new Date().toISOString(),
     });
-    if (next.status === "active") {
-      const existingId = this.#fingerprints.get(next.fingerprint);
+    if (reservesFingerprint(next)) {
+      const existingId = this.#fingerprints.get(fingerprintKey(next));
       if (existingId !== undefined && existingId !== id) {
         throw new Error(
           `Memory fingerprint already exists: ${next.fingerprint}`,
         );
       }
     }
-    if (current.status === "active") {
-      this.#fingerprints.delete(current.fingerprint);
+    if (reservesFingerprint(current)) {
+      this.#fingerprints.delete(fingerprintKey(current));
     }
-    if (next.status === "active") {
-      this.#fingerprints.set(next.fingerprint, id);
+    if (reservesFingerprint(next)) {
+      this.#fingerprints.set(fingerprintKey(next), id);
     }
     this.#memories.set(id, copyMemory(next));
     return copyMemory(next);
@@ -195,20 +225,30 @@ export class InMemoryMemoryRepository implements MemoryRepository {
   async softDelete(
     id: string,
     deletedAt = new Date().toISOString(),
+    context: RepositoryContext = {},
   ): Promise<Memory | null> {
     const current = this.#memories.get(id);
-    if (current === undefined) {
+    if (
+      current === undefined ||
+      (context.workspaceId !== undefined &&
+        current.workspaceId !== context.workspaceId)
+    ) {
       return null;
     }
     if (current.status === "deleted") {
       return copyMemory(current);
     }
 
-    return this.update(id, {
-      status: "deleted",
-      deletedAt,
-      updatedAt: deletedAt,
-    });
+    return this.update(
+      id,
+      {
+        status: "deleted",
+        suppressedAt: null,
+        deletedAt,
+        updatedAt: deletedAt,
+      },
+      context,
+    );
   }
 
   async findActiveScopeCandidates(
@@ -249,6 +289,15 @@ export class InMemoryMemoryRepository implements MemoryRepository {
             )) &&
           (memory.scope.component === undefined ||
             components.has(memory.scope.component)) &&
+          (options.requirePathOrComponentMatch !== true ||
+            (memory.scope.path !== undefined &&
+              paths.some(
+                (path) =>
+                  path === memory.scope.path ||
+                  path.startsWith(`${memory.scope.path}/`),
+              )) ||
+            (memory.scope.component !== undefined &&
+              components.has(memory.scope.component))) &&
           (keywords === undefined ||
             keywords.length === 0 ||
             keywords.some((keyword) =>
@@ -267,9 +316,14 @@ export class InMemoryMemoryRepository implements MemoryRepository {
   async supersede(
     memoryId: string,
     replacementInput: Memory,
+    context: RepositoryContext = {},
   ): Promise<SupersedeMemoryResult> {
     const current = this.#memories.get(memoryId);
-    if (current === undefined) {
+    if (
+      current === undefined ||
+      (context.workspaceId !== undefined &&
+        current.workspaceId !== context.workspaceId)
+    ) {
       throw new Error(`Memory not found: ${memoryId}`);
     }
 
@@ -278,7 +332,7 @@ export class InMemoryMemoryRepository implements MemoryRepository {
       throw new Error("Replacement must reference the memory it supersedes");
     }
 
-    const existingId = this.#fingerprints.get(replacement.fingerprint);
+    const existingId = this.#fingerprints.get(fingerprintKey(replacement));
     if (current.status === "superseded") {
       const existing =
         existingId === undefined ? undefined : this.#memories.get(existingId);
@@ -290,9 +344,9 @@ export class InMemoryMemoryRepository implements MemoryRepository {
       }
       throw new Error(`Memory has already been superseded: ${memoryId}`);
     }
-    if (current.status !== "active") {
+    if (current.status !== "active" && current.status !== "suppressed") {
       throw new Error(
-        `Only active memories can be superseded: ${memoryId} is ${current.status}`,
+        `Only active or suppressed memories can be superseded: ${memoryId} is ${current.status}`,
       );
     }
 
@@ -313,7 +367,7 @@ export class InMemoryMemoryRepository implements MemoryRepository {
         throw new Error(`Memory ID already exists: ${replacement.id}`);
       }
       this.#memories.set(replacement.id, copyMemory(replacement));
-      this.#fingerprints.set(replacement.fingerprint, replacement.id);
+      this.#fingerprints.set(fingerprintKey(replacement), replacement.id);
       storedReplacement = replacement;
     }
 
@@ -322,8 +376,9 @@ export class InMemoryMemoryRepository implements MemoryRepository {
       ...current,
       status: "superseded",
       updatedAt: timestamp,
+      suppressedAt: null,
     });
-    this.#fingerprints.delete(current.fingerprint);
+    this.#fingerprints.delete(fingerprintKey(current));
     this.#memories.set(memoryId, copyMemory(superseded));
 
     return {

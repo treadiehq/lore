@@ -163,7 +163,7 @@ same-repository, non-draft pull requests bearing the corresponding
 `lore:codex-review` or `lore:devin-review` label.
 
 Generated jobs require a published standalone binary release and default to
-`treadiehq/lore` at `v0.1.2`. Set `LORE_CLI_REPOSITORY` to the publicly
+`treadiehq/lore` at `v0.1.3`. Set `LORE_CLI_REPOSITORY` to the publicly
 readable `owner/repository` and `LORE_CLI_VERSION` to an existing release tag
 when using another release source.
 

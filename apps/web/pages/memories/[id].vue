@@ -89,6 +89,12 @@ watch(memory, resetDrafts, { immediate: true });
 const canEdit = computed(
   () => memory.value !== null && memory.value.status === "active",
 );
+const canCorrect = computed(
+  () =>
+    memory.value !== null &&
+    (memory.value.status === "active" || memory.value.status === "suppressed"),
+);
+const canForget = canCorrect;
 
 function editableScope(): MemoryScope {
   return {
@@ -178,7 +184,7 @@ function beginEditing(): void {
 
 function beginCorrection(): void {
   const value = memory.value;
-  if (value === null || !canEdit.value) {
+  if (value === null || !canCorrect.value) {
     return;
   }
   editing.value = false;
@@ -253,8 +259,9 @@ async function correctMemory(): Promise<void> {
     correctionError.value = "Corrected learning statement is required.";
     return;
   }
-  if (!canEdit.value) {
-    correctionError.value = "Only active learnings can be corrected.";
+  if (!canCorrect.value) {
+    correctionError.value =
+      "Only active or suppressed learnings can be corrected.";
     return;
   }
   if (!correctionConfirmed.value) {
@@ -292,7 +299,7 @@ async function reloadMemory(): Promise<void> {
 }
 
 async function archiveMemory(): Promise<void> {
-  if (!canEdit.value) {
+  if (!canForget.value) {
     return;
   }
   archiving.value = true;
@@ -301,7 +308,7 @@ async function archiveMemory(): Promise<void> {
     await refresh();
     archiveDialogOpen.value = false;
     editing.value = false;
-    toast.show("Learning archived.");
+    toast.show("Learning forgotten.");
   } catch (caught) {
     toast.show(errorMessage(caught), "error");
   } finally {
@@ -393,12 +400,12 @@ onBeforeRouteLeave(() => {
             </div>
             <div class="flex shrink-0 flex-wrap gap-2">
               <button
-                v-if="canEdit && !editing && !correcting"
+                v-if="canCorrect && !editing && !correcting"
                 type="button"
                 class="lore-button-primary min-h-9 px-3 py-1.5"
                 @click="beginCorrection"
               >
-                Correct
+                That was wrong
               </button>
               <button
                 v-if="canEdit && !editing && !correcting"
@@ -409,12 +416,12 @@ onBeforeRouteLeave(() => {
                 Edit in place
               </button>
               <button
-                v-if="canEdit && !editing && !correcting"
+                v-if="canForget && !editing && !correcting"
                 type="button"
                 class="lore-button-ghost min-h-9 px-3 py-1.5 text-lore-danger"
                 @click="archiveDialogOpen = true"
               >
-                Archive
+                Forget
               </button>
             </div>
           </div>
@@ -554,7 +561,7 @@ onBeforeRouteLeave(() => {
             <h2 class="text-sm font-semibold text-lore-text">Edit learning</h2>
             <p class="mt-1 text-xs text-lore-text-muted">
               Fix a typo or metadata in place. For a change in meaning, use
-              Correct so the prior statement remains in history.
+              That was wrong so the prior statement remains in history.
             </p>
           </div>
           <div class="space-y-5 p-5">
@@ -850,7 +857,8 @@ onBeforeRouteLeave(() => {
               v-if="!canEdit"
               class="mt-4 rounded-lg border border-lore-border bg-lore-raised p-3 text-xs leading-5 text-lore-text-muted"
             >
-              Archived and replaced learnings are read-only.
+              Suppressed, forgotten, and replaced learnings cannot be edited
+              in place.
             </p>
           </aside>
         </div>
@@ -859,9 +867,9 @@ onBeforeRouteLeave(() => {
 
     <UiConfirmDialog
       :open="archiveDialogOpen"
-      title="Archive this learning?"
-      description="It will stop being applied to future work but remain available in history."
-      confirm-label="Archive learning"
+      title="Forget this learning?"
+      description="It will stop being injected into future work but remain available in history."
+      confirm-label="Forget learning"
       :pending="archiving"
       @cancel="archiveDialogOpen = false"
       @confirm="archiveMemory"

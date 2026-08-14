@@ -17,6 +17,7 @@ const memory = {
   supersedesMemoryId: null,
   createdAt: now,
   updatedAt: now,
+  suppressedAt: null,
   deletedAt: null,
 };
 const packing = {

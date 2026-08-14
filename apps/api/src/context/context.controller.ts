@@ -1,18 +1,25 @@
 import {
   Body,
   Controller,
+  Get,
   HttpCode,
   HttpStatus,
+  Param,
   Post,
   Req,
 } from "@nestjs/common";
 import {
   AgentTaskSchema,
   ContextDeliveryRequestSchema,
+  DeliveryFeedbackRequestSchema,
   type AgentTask,
   type ContextDeliveryRequest,
   type ContextDeliveryResponse,
+  type DeliveryFeedbackRequest,
+  type DeliveryFeedbackResponse,
+  type DeliveryReceiptDetail,
 } from "@lore-co/core";
+import { MemoryIdParamsSchema } from "../common/request-schemas.js";
 import { ZodValidationPipe } from "../common/zod-validation.pipe.js";
 import {
   requireRequestId,
@@ -55,6 +62,31 @@ export class ContextController {
       delivery,
       requireWorkspace(request),
       requireRequestId(request),
+    );
+  }
+
+  @Get("deliveries/:id")
+  getDelivery(
+    @Param(new ZodValidationPipe(MemoryIdParamsSchema))
+    params: { id: string },
+    @Req() request: WorkspaceHttpRequest,
+  ): Promise<DeliveryReceiptDetail> {
+    return this.#service.getDelivery(params.id, requireWorkspace(request));
+  }
+
+  @Post("deliveries/:id/feedback")
+  @HttpCode(HttpStatus.OK)
+  recordFeedback(
+    @Param(new ZodValidationPipe(MemoryIdParamsSchema))
+    params: { id: string },
+    @Body(new ZodValidationPipe(DeliveryFeedbackRequestSchema))
+    body: DeliveryFeedbackRequest,
+    @Req() request: WorkspaceHttpRequest,
+  ): Promise<DeliveryFeedbackResponse> {
+    return this.#service.recordFeedback(
+      params.id,
+      body,
+      requireWorkspace(request),
     );
   }
 }

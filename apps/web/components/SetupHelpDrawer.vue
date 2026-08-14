@@ -24,8 +24,13 @@ const installCommand = computed(
 
 const claudeConnectCommand = computed(() => {
   const apiUrl = String(runtimeConfig.public.connectorApiUrl).replace(/\/+$/u, "");
+  const dashboardUrl = import.meta.client ? window.location.origin : "";
+  const dashboardOption =
+    dashboardUrl === ""
+      ? ""
+      : ` --dashboard-url ${shellQuote(dashboardUrl)}`;
   const token = props.workspaceToken ?? "<workspace-token>";
-  return `lore connect --url ${shellQuote(apiUrl)} --token ${shellQuote(token)} --agent claude`;
+  return `lore connect --url ${shellQuote(apiUrl)}${dashboardOption} --token ${shellQuote(token)} --agent claude`;
 });
 
 const agentCommands = computed(() => [

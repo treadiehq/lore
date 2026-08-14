@@ -68,6 +68,9 @@ export function createEngineHttpBridge(
         const packed = packRelevantMemories(result.memories);
         return json({
           memories: packed.memories,
+          hits: (result.hits ?? []).filter((hit) =>
+            packed.memories.some((memory) => memory.id === hit.memory.id),
+          ),
           context: packed.text,
           packing: packed.packing,
         });

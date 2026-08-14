@@ -7,7 +7,7 @@ Codex, Devin, and other agents when they are relevant.
 
 ## Connect
 
-Go to [Lore Website](https://uselore.co) and sign up to get a workspace token.
+Go to [Lore](https://uselore.co) and sign up to get a workspace token.
 
 Install the CLI with either option:
 

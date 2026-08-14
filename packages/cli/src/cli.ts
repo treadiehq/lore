@@ -24,6 +24,7 @@ import {
 import { connectGithub, runGithubCommand } from "./github.js";
 import { runDevinCommand } from "./devin.js";
 import { runHostCommand } from "./host.js";
+import { runDemoCommand } from "./demo.js";
 import { updateCommand } from "./update.js";
 import { IS_STANDALONE_BINARY, LORE_VERSION } from "./version.js";
 
@@ -47,6 +48,7 @@ export interface LorePaths {
 export interface ConnectorConfig {
   version: 1;
   apiUrl: string;
+  dashboardUrl?: string;
   token: string;
   agents: AgentName[];
   connectedAt: string;
@@ -61,6 +63,7 @@ interface JsonDocument {
 
 interface ConnectArguments {
   apiUrl?: string;
+  dashboardUrl?: string;
   token?: string;
   agents: AgentName[];
   timeoutMs?: number;
@@ -93,6 +96,7 @@ Commands:
   host         Call auditable APIs from external agent hosts
   status       Show connector and hook state
   doctor       Diagnose configuration, hooks, and API reachability
+  demo         Prove a file-scoped Claude-to-Codex handoff
   update       Install the latest Lore CLI binary
   disconnect   Remove Lore-owned hooks and local credentials
   hook         Internal native hook handler
@@ -109,6 +113,7 @@ Examples:
   lore connect github --repo owner/repository
   lore status --json
   lore doctor
+  lore demo
   lore update
   lore devin --help
 `;
@@ -121,6 +126,7 @@ Usage:
 
 Options:
   --url <url>           Lore API base URL (or LORE_API_URL)
+  --dashboard-url <url> Lore dashboard URL used for receipt links
   --token <token>       Workspace bearer token (or LORE_TOKEN)
   --agent <name>        codex or claude; repeat to override auto-detection
   --timeout-ms <ms>     Hook request timeout, 250-10000 (default: 2500)
@@ -410,9 +416,14 @@ function parseConnectorConfig(value: unknown): ConnectorConfig | null {
     value.timeoutMs <= 10_000
       ? value.timeoutMs
       : 2_500;
+  const dashboardUrl =
+    typeof value.dashboardUrl === "string"
+      ? normalizeApiUrl(value.dashboardUrl)
+      : undefined;
   return {
     version: 1,
     apiUrl: value.apiUrl,
+    ...(dashboardUrl === undefined ? {} : { dashboardUrl }),
     token: value.token,
     agents,
     connectedAt: value.connectedAt,
@@ -542,6 +553,7 @@ function parseConnectArguments(args: readonly string[]): ConnectArguments | null
     }
     if (
       argument !== "--url" &&
+      argument !== "--dashboard-url" &&
       argument !== "--token" &&
       argument !== "--agent" &&
       argument !== "--timeout-ms"
@@ -552,6 +564,8 @@ function parseConnectArguments(args: readonly string[]): ConnectArguments | null
     index = valueIndex;
     if (argument === "--url") {
       parsed.apiUrl = value;
+    } else if (argument === "--dashboard-url") {
+      parsed.dashboardUrl = value;
     } else if (argument === "--token") {
       parsed.token = value;
     } else if (argument === "--timeout-ms") {
@@ -610,6 +624,10 @@ async function connectCommand(args: readonly string[]): Promise<void> {
     existing?.apiUrl;
   const token =
     parsed.token ?? process.env.LORE_TOKEN ?? existing?.token;
+  const dashboardUrlValue =
+    parsed.dashboardUrl ??
+    process.env.LORE_DASHBOARD_URL ??
+    existing?.dashboardUrl;
   if (apiUrlValue === undefined || apiUrlValue.trim() === "") {
     throw new Error(
       "Lore API URL is required. Use --url <url> or LORE_API_URL.",
@@ -669,6 +687,9 @@ async function connectCommand(args: readonly string[]): Promise<void> {
   const config: ConnectorConfig = {
     version: 1,
     apiUrl: normalizeApiUrl(apiUrlValue),
+    ...(dashboardUrlValue === undefined
+      ? {}
+      : { dashboardUrl: normalizeApiUrl(dashboardUrlValue) }),
     token: token.trim(),
     agents,
     connectedAt: existing?.connectedAt ?? now.toISOString(),
@@ -970,6 +991,12 @@ export async function runCli(
       return;
     case "doctor":
       await doctorCommand(commandArgs);
+      return;
+    case "demo":
+      await runDemoCommand(
+        commandArgs,
+        await readConnectorConfig(getLorePaths()),
+      );
       return;
     case "update":
       await updateCommand(commandArgs);

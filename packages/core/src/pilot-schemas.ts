@@ -6,6 +6,9 @@ import {
   MemorySchema,
   MemoryScopeSchema,
   ObserveResponseSchema,
+  RetrievalHitSchema,
+  RetrievalMatchReasonSchema,
+  RepositoryPathSchema,
 } from "./schemas.js";
 
 export const WorkspaceStatusSchema = z.enum(["active", "disabled"]);
@@ -103,7 +106,8 @@ const RawPairedTurnRequestSchema = z
     path: z.string().trim().min(1).max(2_000).optional(),
     component: z.string().trim().min(1).max(500).optional(),
     task: z.string().trim().min(1).max(100_000).optional(),
-    files: z.array(z.string().trim().min(1).max(2_000)).max(500).optional(),
+    diff: z.string().max(524_288).optional(),
+    files: z.array(RepositoryPathSchema).max(500).optional(),
     components: z.array(z.string().trim().min(1).max(500)).max(100).optional(),
     symbols: z.array(z.string().trim().min(1).max(500)).max(500).optional(),
     occurredAt: z.iso.datetime({ offset: true }).optional(),
@@ -186,6 +190,7 @@ export const PairedTurnRequestSchema = RawPairedTurnRequestSchema.transform(
         ? {}
         : { learningScope: input.learningScope }),
       ...(input.task === undefined ? {} : { task: input.task }),
+      ...(input.diff === undefined ? {} : { diff: input.diff }),
       ...(input.files === undefined ? {} : { files: input.files }),
       ...(input.components === undefined ? {} : { components: input.components }),
       ...(input.symbols === undefined ? {} : { symbols: input.symbols }),
@@ -209,6 +214,8 @@ const RawObservationRequestSchema = z
     scope: TurnScopeSchema.optional(),
     learningScope: TurnScopeSchema.optional(),
     task: z.string().trim().min(1).max(100_000).optional(),
+    diff: z.string().max(524_288).optional(),
+    files: z.array(RepositoryPathSchema).max(500).optional(),
     messages: z.array(AgentMessageSchema).min(1).max(500),
     occurredAt: z.iso.datetime({ offset: true }),
     metadata: z.record(z.string(), z.unknown()).optional(),
@@ -373,10 +380,80 @@ export const DeliveryReceiptSchema = z
     requestId: z.string().trim().min(1).max(128),
     memoryIds: z.array(z.uuid()),
     packing: ContextPackingSchema.nullable(),
+    querySha256: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/u)
+      .nullable()
+      .default(null),
+    retrievalPolicyVersion: z.string().trim().min(1).max(100).default("legacy"),
+    hits: z.array(
+      z
+        .object({
+          memoryId: z.uuid(),
+          fingerprint: z.string().regex(/^[a-f0-9]{64}$/u),
+          content: z.string().trim().min(1),
+          score: z.number().nonnegative(),
+          reasons: z.array(RetrievalMatchReasonSchema).min(1),
+          matchedTerms: z.array(z.string()),
+        })
+        .strict(),
+    ).default([]),
     deliveredAt: z.iso.datetime({ offset: true }),
   })
   .strict();
 export type DeliveryReceipt = z.infer<typeof DeliveryReceiptSchema>;
+
+export const DeliveryFeedbackActionSchema = z.enum(["wrong", "forget"]);
+export type DeliveryFeedbackAction = z.infer<
+  typeof DeliveryFeedbackActionSchema
+>;
+
+export const DeliveryFeedbackRequestSchema = z
+  .object({
+    memoryId: z.uuid(),
+    action: DeliveryFeedbackActionSchema,
+    reason: z.string().trim().min(1).max(500).optional(),
+  })
+  .strict();
+export type DeliveryFeedbackRequest = z.infer<
+  typeof DeliveryFeedbackRequestSchema
+>;
+
+export const DeliveryFeedbackSchema = z
+  .object({
+    id: z.uuid(),
+    workspaceId: z.uuid(),
+    receiptId: z.uuid(),
+    memoryId: z.uuid(),
+    action: DeliveryFeedbackActionSchema,
+    reason: z.string().trim().min(1).max(500),
+    actorId: z.string().nullable(),
+    createdAt: z.iso.datetime({ offset: true }),
+  })
+  .strict();
+export type DeliveryFeedback = z.infer<typeof DeliveryFeedbackSchema>;
+
+export const DeliveryReceiptDetailSchema = z
+  .object({
+    receipt: DeliveryReceiptSchema,
+    event: ConnectorEventSchema,
+    memories: z.array(MemorySchema),
+    feedback: z.array(DeliveryFeedbackSchema),
+  })
+  .strict();
+export type DeliveryReceiptDetail = z.infer<
+  typeof DeliveryReceiptDetailSchema
+>;
+
+export const DeliveryFeedbackResponseSchema = z
+  .object({
+    feedback: DeliveryFeedbackSchema,
+    memory: MemorySchema,
+  })
+  .strict();
+export type DeliveryFeedbackResponse = z.infer<
+  typeof DeliveryFeedbackResponseSchema
+>;
 
 export const ContextDeliveryResponseSchema = z
   .object({
@@ -384,6 +461,7 @@ export const ContextDeliveryResponseSchema = z
     receipt: DeliveryReceiptSchema,
     replayed: z.boolean(),
     memories: z.array(MemorySchema),
+    hits: z.array(RetrievalHitSchema).default([]),
     context: z.string(),
     packing: ContextPackingSchema,
   })
@@ -471,6 +549,7 @@ export const PairedTurnResponseSchema = z
     context: z
       .object({
         memories: z.array(MemorySchema),
+        hits: z.array(RetrievalHitSchema).default([]),
         text: z.string(),
         packing: ContextPackingSchema.optional(),
       })

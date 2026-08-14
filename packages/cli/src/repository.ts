@@ -1,6 +1,17 @@
 import { readFile } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 
+export function boundedUtf8Text(
+  value: string,
+  maximumBytes: number,
+  truncationNotice = "",
+): string {
+  const bytes = Buffer.from(value, "utf8");
+  return bytes.byteLength <= maximumBytes
+    ? value
+    : `${bytes.subarray(0, maximumBytes).toString("utf8")}${truncationNotice}`;
+}
+
 export function canonicalRepositoryScope(value: string): string {
   const trimmed = value.trim().replace(/\/+$/u, "");
   if (trimmed === "") {

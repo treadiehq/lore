@@ -28,6 +28,8 @@ import {
   ActivityListResponseSchema,
   ActivityQuerySchema,
   ContextDeliveryResponseSchema,
+  DeliveryFeedbackResponseSchema,
+  DeliveryReceiptDetailSchema,
   DevinSessionRegistrationResponseSchema,
   LearningInspectionResponseSchema,
   ObservationResponseSchema,
@@ -37,6 +39,9 @@ import {
   type ConnectorEvent,
   type ContextDeliveryRequest,
   type ContextDeliveryResponse,
+  type DeliveryFeedbackRequest,
+  type DeliveryFeedbackResponse,
+  type DeliveryReceiptDetail,
   type DeliveryReceipt,
   type DevinSessionRegistration,
   type DevinSessionRegistrationResponse,
@@ -90,7 +95,12 @@ export type {
   ConnectorEvent,
   ContextDeliveryRequest,
   ContextDeliveryResponse,
+  DeliveryFeedback,
+  DeliveryFeedbackAction,
+  DeliveryFeedbackRequest,
+  DeliveryFeedbackResponse,
   DeliveryReceipt,
+  DeliveryReceiptDetail,
   DevinSessionRegistration,
   DevinSessionRegistrationResponse,
   LearningInspectionProvenance,
@@ -143,6 +153,7 @@ export type UpdateLearningInput = UpdateMemoryInput;
 
 export interface ContextResponse {
   memories: GetContextResponse["memories"];
+  hits: NonNullable<GetContextResponse["hits"]>;
   context: string;
   packing: ContextPacking;
 }
@@ -150,6 +161,7 @@ export interface ContextResponse {
 type GetContextResponse = z.infer<typeof GetContextResponseSchema>;
 
 const FormattedContextResponseSchema = GetContextResponseSchema.extend({
+  hits: GetContextResponseSchema.shape.hits.unwrap(),
   context: z.string(),
   packing: ContextPackingSchema,
 });
@@ -317,6 +329,26 @@ export class SharedMemoryClient {
       "POST",
       "/v1/context/deliveries",
       ContextDeliveryResponseSchema,
+      input,
+    );
+  }
+
+  getDeliveryReceipt(id: string): Promise<DeliveryReceiptDetail> {
+    return this.#request(
+      "GET",
+      `/v1/context/deliveries/${encodeURIComponent(id)}`,
+      DeliveryReceiptDetailSchema,
+    );
+  }
+
+  recordDeliveryFeedback(
+    id: string,
+    input: DeliveryFeedbackRequest,
+  ): Promise<DeliveryFeedbackResponse> {
+    return this.#request(
+      "POST",
+      `/v1/context/deliveries/${encodeURIComponent(id)}/feedback`,
+      DeliveryFeedbackResponseSchema,
       input,
     );
   }

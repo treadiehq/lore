@@ -93,6 +93,34 @@ describe("SharedMemoryEngine persistence semantics", () => {
     expect(relearned.memory.status).toBe("active");
   });
 
+  it("reserves suppressed fingerprints until the learning is forgotten", async () => {
+    const { engine, repository } = createEngineHarness();
+    const input = {
+      content: "Account writes must use AccountStore.",
+      scope: { repo: "accounts" },
+      category: "convention" as const,
+      source,
+    };
+    const first = await engine.remember(input);
+    const suppressedAt = "2026-08-14T20:00:00.000Z";
+    await repository.update(first.memory.id, {
+      status: "suppressed",
+      suppressedAt,
+      updatedAt: suppressedAt,
+    });
+
+    const duplicate = await engine.remember(input);
+    expect(duplicate).toMatchObject({
+      inserted: false,
+      memory: { id: first.memory.id, status: "suppressed", suppressedAt },
+    });
+
+    await engine.forget(first.memory.id);
+    const relearned = await engine.remember(input);
+    expect(relearned.inserted).toBe(true);
+    expect(relearned.memory.id).not.toBe(first.memory.id);
+  });
+
   it("rejects unscoped observations and ignores low-confidence candidates", async () => {
     const lowConfidenceExtractor: MemoryExtractor = {
       async extract() {
@@ -196,29 +224,26 @@ describe("ScopedKeywordMemoryRetriever", () => {
       repo: "accounts",
     };
 
-    await expect(
-      retriever.retrieve({
-        agent: "codex",
-        ...scope,
-        task: "Investigate invoice reconciliation",
-      }),
-    ).resolves.toEqual([keyword]);
-    await expect(
-      retriever.retrieve({
-        agent: "codex",
-        ...scope,
-        task: "Review this patch",
-        diff: "+ await stripe.customers.update(customerId)",
-      }),
-    ).resolves.toEqual([diff]);
-    await expect(
-      retriever.retrieve({
-        agent: "claude",
-        ...scope,
-        task: "Update account persistence",
-        symbols: ["AccountStore"],
-      }),
-    ).resolves.toEqual([symbol]);
+    const keywordHits = await retriever.retrieve({
+      agent: "codex",
+      ...scope,
+      task: "Investigate invoice reconciliation",
+    });
+    expect(keywordHits.map((hit) => hit.memory)).toEqual([keyword]);
+    const diffHits = await retriever.retrieve({
+      agent: "codex",
+      ...scope,
+      task: "Review this patch",
+      diff: "+ await stripe.customers.update(customerId)",
+    });
+    expect(diffHits.map((hit) => hit.memory)).toEqual([diff]);
+    const symbolHits = await retriever.retrieve({
+      agent: "claude",
+      ...scope,
+      task: "Update account persistence",
+      symbols: ["AccountStore"],
+    });
+    expect(symbolHits.map((hit) => hit.memory)).toEqual([symbol]);
 
     const combined = await retriever.retrieve({
       agent: "codex",
@@ -228,9 +253,17 @@ describe("ScopedKeywordMemoryRetriever", () => {
       symbols: ["AccountStore"],
       limit: 2,
     });
-    expect(combined.map((memory) => memory.id)).toEqual([diff.id, symbol.id]);
-    expect(combined).not.toContainEqual(wrongRepo);
-    expect(combined).not.toContainEqual(deleted);
+    expect(new Set(combined.map((hit) => hit.memory.id))).toEqual(
+      new Set([diff.id, symbol.id]),
+    );
+    expect(
+      combined.find((hit) => hit.memory.id === diff.id)?.reasons,
+    ).toContain("lexical");
+    expect(
+      combined.find((hit) => hit.memory.id === symbol.id)?.reasons,
+    ).toContain("symbol");
+    expect(combined.map((hit) => hit.memory)).not.toContainEqual(wrongRepo);
+    expect(combined.map((hit) => hit.memory)).not.toContainEqual(deleted);
     expect(combined).toHaveLength(2);
   });
 
@@ -263,6 +296,47 @@ describe("ScopedKeywordMemoryRetriever", () => {
         diff: "+ stripe.customers.update(customerId)",
       }),
     ).resolves.toMatchObject({ memories: [] });
+  });
+
+  it("keeps path and symbol signals independent from a large diff", async () => {
+    const { engine } = createEngineHarness();
+    const pathRule = await engine.remember({
+      content: "Generated clients are regenerated instead of edited by hand.",
+      scope: { repo: "payments", path: "src/generated" },
+      category: "convention",
+      source,
+    });
+    const symbolRule = await engine.remember({
+      content: "SettlementCoordinator must preserve idempotent retries.",
+      scope: { repo: "payments" },
+      category: "convention",
+      source,
+    });
+    const noise = Array.from(
+      { length: 500 },
+      (_, index) => `+ const unrelatedIdentifier${index} = ${index};`,
+    ).join("\n");
+
+    const context = await engine.getContext({
+      agent: "codex",
+      repo: "payments",
+      task: "Review this change",
+      files: ["src/generated/client.ts"],
+      symbols: ["SettlementCoordinator"],
+      diff: noise,
+    });
+
+    expect(new Set(context.memories.map((memory) => memory.id))).toEqual(
+      new Set([pathRule.memory.id, symbolRule.memory.id]),
+    );
+    expect(
+      context.hits?.find((hit) => hit.memory.id === pathRule.memory.id)
+        ?.reasons,
+    ).toContain("path");
+    expect(
+      context.hits?.find((hit) => hit.memory.id === symbolRule.memory.id)
+        ?.reasons,
+    ).toContain("symbol");
   });
 });
 
@@ -303,5 +377,71 @@ describe("memory superseding", () => {
       corrected.memory.id,
     ]);
     expect(context.memories).not.toContainEqual(corrected.supersededMemory);
+  });
+
+  it("redacts correction content and manual source text before storage", async () => {
+    const { engine } = createEngineHarness();
+    const original = await engine.remember({
+      content: "Use the legacy account token.",
+      scope: { repo: "accounts" },
+      source: { agent: "human", sessionId: "manual-original" },
+    });
+
+    const corrected = await engine.correct({
+      memoryId: original.memory.id,
+      content:
+        "Use AccountStore with api_key=super-secret-correction-value.",
+      source: {
+        agent: "human",
+        sessionId: "manual-correction",
+        rawText: "password=manual-secret-value",
+      },
+    });
+
+    expect(corrected.memory.content).toContain("[REDACTED:CREDENTIAL]");
+    expect(corrected.memory.source.rawText).toContain(
+      "[REDACTED:CREDENTIAL]",
+    );
+    expect(corrected.memory.source.redacted).toBe(true);
+    expect(JSON.stringify(corrected.memory)).not.toContain(
+      "super-secret-correction-value",
+    );
+    expect(JSON.stringify(corrected.memory)).not.toContain(
+      "manual-secret-value",
+    );
+  });
+});
+
+describe("memory tenant lifecycle", () => {
+  it("keeps fingerprints and lifecycle operations workspace-local", async () => {
+    const { engine } = createEngineHarness();
+    const firstWorkspace = "11111111-1111-4111-8111-111111111111";
+    const secondWorkspace = "22222222-2222-4222-8222-222222222222";
+    const input = {
+      content: "Use AccountStore for account writes.",
+      scope: { organization: "acme", repo: "accounts" },
+      source: { agent: "human" },
+    };
+    const first = await engine.remember({
+      ...input,
+      source: { ...input.source, workspaceId: firstWorkspace },
+    });
+    const second = await engine.remember({
+      ...input,
+      source: { ...input.source, workspaceId: secondWorkspace },
+    });
+
+    expect(first.inserted).toBe(true);
+    expect(second.inserted).toBe(true);
+    expect(first.memory.id).not.toBe(second.memory.id);
+    await expect(
+      engine.getMemory(first.memory.id, { workspaceId: secondWorkspace }),
+    ).resolves.toEqual({ memory: null });
+    await expect(
+      engine.forget(first.memory.id, { workspaceId: secondWorkspace }),
+    ).rejects.toThrow(/memory not found/iu);
+    await expect(
+      engine.getMemory(first.memory.id, { workspaceId: firstWorkspace }),
+    ).resolves.toMatchObject({ memory: { status: "active" } });
   });
 });

@@ -15,17 +15,44 @@ export type MemoryCategory = z.infer<typeof MemoryCategorySchema>;
 export const LearningCategorySchema = MemoryCategorySchema;
 export type LearningCategory = MemoryCategory;
 
-export const MemoryStatusSchema = z.enum(["active", "superseded", "deleted"]);
+export const MemoryStatusSchema = z.enum([
+  "active",
+  "suppressed",
+  "superseded",
+  "deleted",
+]);
 export type MemoryStatus = z.infer<typeof MemoryStatusSchema>;
 export const LearningStatusSchema = MemoryStatusSchema;
 export type LearningStatus = MemoryStatus;
+
+export function normalizeRepositoryPath(value: string): string {
+  const segments: string[] = [];
+  for (const segment of value.trim().replaceAll("\\", "/").split("/")) {
+    if (segment === "" || segment === ".") {
+      continue;
+    }
+    if (segment === "..") {
+      segments.pop();
+      continue;
+    }
+    segments.push(segment);
+  }
+  return segments.join("/");
+}
+
+export const RepositoryPathSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .transform(normalizeRepositoryPath)
+  .pipe(z.string().min(1));
 
 export const MemoryScopeSchema = z
   .object({
     organization: z.string().trim().min(1).optional(),
     project: z.string().trim().min(1).optional(),
     repo: z.string().trim().min(1).optional(),
-    path: z.string().trim().min(1).optional(),
+    path: RepositoryPathSchema.optional(),
     component: z.string().trim().min(1).optional(),
   })
   .strict();
@@ -117,7 +144,7 @@ export const AgentTaskSchema = z
     component: z.string().trim().min(1).optional(),
     task: z.string().trim().min(1),
     diff: z.string().optional(),
-    files: z.array(z.string()).optional(),
+    files: z.array(RepositoryPathSchema).optional(),
     components: z.array(z.string()).optional(),
     symbols: z.array(z.string()).optional(),
     limit: z.number().int().positive().max(20).optional(),
@@ -162,6 +189,7 @@ export const MemorySchema = z
     supersedesMemoryId: z.uuid().nullable(),
     createdAt: z.iso.datetime({ offset: true }),
     updatedAt: z.iso.datetime({ offset: true }),
+    suppressedAt: z.iso.datetime({ offset: true }).nullable().default(null),
     deletedAt: z.iso.datetime({ offset: true }).nullable(),
   })
   .strict();
@@ -200,6 +228,7 @@ export const MemoryUpdateSchema = z
     fingerprint: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
     supersedesMemoryId: z.uuid().nullable().optional(),
     updatedAt: z.iso.datetime({ offset: true }).optional(),
+    suppressedAt: z.iso.datetime({ offset: true }).nullable().optional(),
     deletedAt: z.iso.datetime({ offset: true }).nullable().optional(),
   })
   .strict();
@@ -332,9 +361,34 @@ export const ContextPackingSchema = z
   .strict();
 export type ContextPacking = z.infer<typeof ContextPackingSchema>;
 
+export const RetrievalMatchReasonSchema = z.enum([
+  "repository",
+  "path",
+  "component",
+  "symbol",
+  "lexical",
+  "semantic",
+]);
+export type RetrievalMatchReason = z.infer<
+  typeof RetrievalMatchReasonSchema
+>;
+
+export const RetrievalHitSchema = z
+  .object({
+    memory: MemorySchema,
+    score: z.number().nonnegative(),
+    reasons: z.array(RetrievalMatchReasonSchema).min(1),
+    matchedTerms: z.array(z.string()).default([]),
+    lexicalRank: z.number().int().positive().nullable(),
+    semanticRank: z.number().int().positive().nullable(),
+  })
+  .strict();
+export type RetrievalHit = z.infer<typeof RetrievalHitSchema>;
+
 export const GetContextResponseSchema = z
   .object({
     memories: z.array(MemorySchema),
+    hits: z.array(RetrievalHitSchema).optional(),
     context: z.string().optional(),
     packing: ContextPackingSchema.optional(),
   })

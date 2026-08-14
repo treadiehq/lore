@@ -21,6 +21,7 @@ const memory = {
   supersedesMemoryId: null,
   createdAt: "2026-08-12T20:00:00.000Z",
   updatedAt: "2026-08-12T20:00:00.000Z",
+  suppressedAt: null,
   deletedAt: null,
 };
 
@@ -48,11 +49,24 @@ describe("ContextService delivery receipts", () => {
       requestId: "request-1",
       memoryIds: [memory.id],
       packing: null,
+      querySha256: null,
+      retrievalPolicyVersion: "precision-v1",
+      hits: [],
       deliveredAt: "2026-08-12T20:00:00.000Z",
     };
     const recordDeliveryReceipt = vi.fn(async (input) => ({
       ...receipt,
       packing: input.packing,
+      querySha256: input.querySha256,
+      retrievalPolicyVersion: input.retrievalPolicyVersion,
+      hits: input.hits.map((hit) => ({
+        memoryId: hit.memory.id,
+        fingerprint: hit.memory.fingerprint,
+        content: hit.memory.content,
+        score: hit.score,
+        reasons: hit.reasons,
+        matchedTerms: hit.matchedTerms,
+      })),
     }));
     const repository = {
       recordContextDeliveryEvent: vi.fn(async (input) => ({
@@ -62,7 +76,19 @@ describe("ContextService delivery receipts", () => {
       recordDeliveryReceipt,
     } as unknown as PostgresPilotRepository;
     const engine = {
-      getContext: vi.fn(async () => ({ memories: [memory] })),
+      getContext: vi.fn(async () => ({
+        memories: [memory],
+        hits: [
+          {
+            memory,
+            score: 8,
+            reasons: ["repository", "lexical"],
+            matchedTerms: ["account", "accountstore"],
+            lexicalRank: 1,
+            semanticRank: null,
+          },
+        ],
+      })),
     } as unknown as SharedMemoryEngine;
     const service = new ContextService(engine, repository);
 
@@ -84,12 +110,88 @@ describe("ContextService delivery receipts", () => {
     expect(result.context).toContain("AccountStore");
     expect(result.packing.contextSha256).toMatch(/^[a-f0-9]{64}$/u);
     expect(result.receipt.memoryIds).toEqual([memory.id]);
+    expect(result.hits[0]).toMatchObject({
+      memory: { id: memory.id },
+      reasons: ["repository", "lexical"],
+    });
+    expect(result.receipt.hits[0]).toMatchObject({
+      memoryId: memory.id,
+      content: memory.content,
+    });
     expect(recordDeliveryReceipt).toHaveBeenCalledWith(
       expect.objectContaining({
         eventId: event.id,
         memoryIds: [memory.id],
+        querySha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        retrievalPolicyVersion: "precision-v1",
+        hits: result.hits,
         packing: result.packing,
       }),
     );
+  });
+
+  it("loads receipt details within the authenticated workspace", async () => {
+    const detail = { receipt: { id: "receipt" } };
+    const getDeliveryReceiptDetail = vi.fn(async () => detail);
+    const service = new ContextService(
+      {} as SharedMemoryEngine,
+      { getDeliveryReceiptDetail } as unknown as PostgresPilotRepository,
+    );
+
+    await expect(
+      service.getDelivery(
+        "55555555-5555-4555-8555-555555555555",
+        workspace,
+      ),
+    ).resolves.toBe(detail);
+    expect(getDeliveryReceiptDetail).toHaveBeenCalledWith({
+      workspaceId: workspace.workspaceId,
+      receiptId: "55555555-5555-4555-8555-555555555555",
+    });
+  });
+
+  it("suppresses feedback immediately and records the authenticated actor", async () => {
+    const response = {
+      feedback: {
+        id: "66666666-6666-4666-8666-666666666666",
+        workspaceId: workspace.workspaceId,
+        receiptId: "55555555-5555-4555-8555-555555555555",
+        memoryId: memory.id,
+        action: "wrong",
+        reason: "password=[REDACTED:CREDENTIAL]",
+        actorId: workspace.tokenId,
+        createdAt: "2026-08-12T20:00:00.000Z",
+      },
+      memory: {
+        ...memory,
+        status: "suppressed",
+        suppressedAt: "2026-08-12T20:00:00.000Z",
+      },
+    };
+    const recordDeliveryFeedback = vi.fn(async () => response);
+    const service = new ContextService(
+      {} as SharedMemoryEngine,
+      { recordDeliveryFeedback } as unknown as PostgresPilotRepository,
+    );
+
+    await expect(
+      service.recordFeedback(
+        "55555555-5555-4555-8555-555555555555",
+        {
+          memoryId: memory.id,
+          action: "wrong",
+          reason: "password=super-secret-value",
+        },
+        workspace,
+      ),
+    ).resolves.toBe(response);
+    expect(recordDeliveryFeedback).toHaveBeenCalledWith({
+      workspaceId: workspace.workspaceId,
+      receiptId: "55555555-5555-4555-8555-555555555555",
+      memoryId: memory.id,
+      action: "wrong",
+      reason: "password=[REDACTED:CREDENTIAL]",
+      actorId: workspace.tokenId,
+    });
   });
 });

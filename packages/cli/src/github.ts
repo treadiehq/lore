@@ -12,6 +12,7 @@ import {
   type ReviewOutput,
 } from "./review-output.js";
 import { GITHUB_TEMPLATE_ASSETS } from "./generated-assets.js";
+import { boundedUtf8Text } from "./repository.js";
 
 type ReviewProvider = "codex" | "devin";
 
@@ -234,11 +235,11 @@ async function gitReviewEvidence(
     runProcess("git", ["diff", "--no-ext-diff", "--unified=40", range], checkout),
     runProcess("git", ["diff", "--name-only", range], checkout),
   ]);
-  const diffBuffer = Buffer.from(rawDiff);
-  const diff =
-    diffBuffer.byteLength <= MAX_DIFF_BYTES
-      ? rawDiff
-      : `${diffBuffer.subarray(0, MAX_DIFF_BYTES).toString("utf8")}\n\n[diff truncated by Lore]`;
+  const diff = boundedUtf8Text(
+    rawDiff,
+    MAX_DIFF_BYTES,
+    "\n\n[diff truncated by Lore]",
+  );
   return {
     diff,
     files: rawFiles

@@ -379,7 +379,7 @@ describe("customer workflow binary configuration", () => {
         "LORE_CLI_REPOSITORY: ${{ vars.LORE_CLI_REPOSITORY || 'treadiehq/lore' }}",
       );
       expect(workflow).toContain(
-        "LORE_CLI_VERSION: ${{ vars.LORE_CLI_VERSION || 'v0.1.2' }}",
+        "LORE_CLI_VERSION: ${{ vars.LORE_CLI_VERSION || 'v0.1.3' }}",
       );
       expect(workflow).toContain("scripts/install.sh");
       expect(workflow).toContain("lore ");

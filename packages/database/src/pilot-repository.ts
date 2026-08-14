@@ -4,6 +4,9 @@ import {
   ActivityQuerySchema,
   AuthenticatedWorkspaceSchema,
   ConnectorEventSchema,
+  DeliveryFeedbackResponseSchema,
+  DeliveryFeedbackSchema,
+  DeliveryReceiptDetailSchema,
   DeliveryReceiptSchema,
   LearningInspectionResponseSchema,
   MemorySchema,
@@ -18,7 +21,11 @@ import {
   type ContextPacking,
   type ConnectorEvent,
   type ContextDeliveryRequest,
+  type DeliveryFeedback,
+  type DeliveryFeedbackAction,
+  type DeliveryFeedbackResponse,
   type DeliveryReceipt,
+  type DeliveryReceiptDetail,
   type LearningInspectionResponse,
   type Memory,
   type MemoryProvenance,
@@ -26,6 +33,7 @@ import {
   type ObservationResponse,
   type PairedTurnRequest,
   type PairedTurnResponse,
+  type RetrievalHit,
   type TurnObservation,
   type WorkspaceToken,
 } from "@lore-co/core";
@@ -46,6 +54,7 @@ import {
 import type { Database, DatabaseConnection } from "./index.js";
 import {
   connectorEvents,
+  deliveryFeedback,
   deliveryReceipts,
   idempotencyRecords,
   memories,
@@ -53,6 +62,7 @@ import {
   workspaces,
   workspaceTokens,
   type ConnectorEventRow,
+  type DeliveryFeedbackRow,
   type DeliveryReceiptRow,
   type MemoryRow,
   type MemoryProvenanceRow,
@@ -129,7 +139,7 @@ function rowToConnectorEvent(row: ConnectorEventRow): ConnectorEvent {
 function rowToMemory(row: MemoryRow): Memory {
   return MemorySchema.parse({
     id: row.id,
-    ...(row.workspaceId === null ? {} : { workspaceId: row.workspaceId }),
+    workspaceId: row.workspaceId,
     content: row.content,
     scope: {
       ...(row.organization === null
@@ -151,7 +161,7 @@ function rowToMemory(row: MemoryRow): Memory {
         ? {}
         : { messageId: row.sourceMessageId }),
       ...(row.sourceRawText === null ? {} : { rawText: row.sourceRawText }),
-      ...(row.workspaceId === null ? {} : { workspaceId: row.workspaceId }),
+      workspaceId: row.workspaceId,
       ...(row.sourceEventId === null ? {} : { eventId: row.sourceEventId }),
       ...(row.sourceRedacted ? { redacted: true } : {}),
     },
@@ -164,6 +174,7 @@ function rowToMemory(row: MemoryRow): Memory {
     supersedesMemoryId: row.supersedesMemoryId,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
+    suppressedAt: row.suppressedAt?.toISOString() ?? null,
     deletedAt: row.deletedAt?.toISOString() ?? null,
   });
 }
@@ -193,7 +204,23 @@ function rowToReceipt(row: DeliveryReceiptRow): DeliveryReceipt {
     requestId: row.requestId,
     memoryIds: row.memoryIds,
     packing: row.packing,
+    querySha256: row.querySha256,
+    retrievalPolicyVersion: row.retrievalPolicyVersion,
+    hits: row.hits,
     deliveredAt: row.deliveredAt.toISOString(),
+  });
+}
+
+function rowToFeedback(row: DeliveryFeedbackRow): DeliveryFeedback {
+  return DeliveryFeedbackSchema.parse({
+    id: row.id,
+    workspaceId: row.workspaceId,
+    receiptId: row.receiptId,
+    memoryId: row.memoryId,
+    action: row.action,
+    reason: row.reason,
+    actorId: row.actorId,
+    createdAt: row.createdAt.toISOString(),
   });
 }
 
@@ -873,6 +900,9 @@ export class PostgresPilotRepository {
     eventId: string;
     requestId: string;
     memoryIds: string[];
+    querySha256: string;
+    retrievalPolicyVersion: string;
+    hits: readonly RetrievalHit[];
     packing?: ContextPacking;
   }): Promise<DeliveryReceipt> {
     const inserted = await this.#db
@@ -883,6 +913,16 @@ export class PostgresPilotRepository {
         eventId: input.eventId,
         requestId: input.requestId,
         memoryIds: input.memoryIds,
+        querySha256: input.querySha256,
+        retrievalPolicyVersion: input.retrievalPolicyVersion,
+        hits: input.hits.map((hit) => ({
+          memoryId: hit.memory.id,
+          fingerprint: hit.memory.fingerprint,
+          content: hit.memory.content,
+          score: hit.score,
+          reasons: [...hit.reasons],
+          matchedTerms: [...hit.matchedTerms],
+        })),
         packing:
           input.packing === undefined
             ? null
@@ -903,6 +943,207 @@ export class PostgresPilotRepository {
       throw new Error("Delivery receipt conflicted but could not be loaded");
     }
     return rowToReceipt(row);
+  }
+
+  async getDeliveryReceiptDetail(input: {
+    workspaceId: string;
+    receiptId: string;
+  }): Promise<DeliveryReceiptDetail | null> {
+    const receiptRows = await this.#db
+      .select()
+      .from(deliveryReceipts)
+      .where(
+        and(
+          eq(deliveryReceipts.id, input.receiptId),
+          eq(deliveryReceipts.workspaceId, input.workspaceId),
+        ),
+      )
+      .limit(1);
+    const receipt = receiptRows[0];
+    if (receipt === undefined) {
+      return null;
+    }
+    const [eventRows, memoryRows, feedbackRows] = await Promise.all([
+      this.#db
+        .select()
+        .from(connectorEvents)
+        .where(
+          and(
+            eq(connectorEvents.id, receipt.eventId),
+            eq(connectorEvents.workspaceId, input.workspaceId),
+          ),
+        )
+        .limit(1),
+      receipt.memoryIds.length === 0
+        ? Promise.resolve([])
+        : this.#db
+            .select()
+            .from(memories)
+            .where(
+              and(
+                eq(memories.workspaceId, input.workspaceId),
+                inArray(memories.id, receipt.memoryIds),
+              ),
+            ),
+      this.#db
+        .select()
+        .from(deliveryFeedback)
+        .where(
+          and(
+            eq(deliveryFeedback.workspaceId, input.workspaceId),
+            eq(deliveryFeedback.receiptId, input.receiptId),
+          ),
+        )
+        .orderBy(deliveryFeedback.createdAt, deliveryFeedback.id),
+    ]);
+    const event = eventRows[0];
+    if (event === undefined) {
+      throw new Error("Delivery receipt event is missing");
+    }
+    const memoryById = new Map(memoryRows.map((row) => [row.id, row]));
+    return DeliveryReceiptDetailSchema.parse({
+      receipt: rowToReceipt(receipt),
+      event: rowToConnectorEvent(event),
+      memories: receipt.memoryIds.flatMap((id) => {
+        const row = memoryById.get(id);
+        return row === undefined ? [] : [rowToMemory(row)];
+      }),
+      feedback: feedbackRows.map(rowToFeedback),
+    });
+  }
+
+  async recordDeliveryFeedback(input: {
+    workspaceId: string;
+    receiptId: string;
+    memoryId: string;
+    action: DeliveryFeedbackAction;
+    reason?: string;
+    actorId?: string;
+  }): Promise<DeliveryFeedbackResponse | null> {
+    return this.#db.transaction(async (transaction) => {
+      const receiptRows = await transaction
+        .select()
+        .from(deliveryReceipts)
+        .where(
+          and(
+            eq(deliveryReceipts.id, input.receiptId),
+            eq(deliveryReceipts.workspaceId, input.workspaceId),
+          ),
+        )
+        .limit(1);
+      const receipt = receiptRows[0];
+      if (
+        receipt === undefined ||
+        !receipt.memoryIds.includes(input.memoryId)
+      ) {
+        return null;
+      }
+      const memoryRows = await transaction
+        .select()
+        .from(memories)
+        .where(
+          and(
+            eq(memories.id, input.memoryId),
+            eq(memories.workspaceId, input.workspaceId),
+          ),
+        )
+        .limit(1)
+        .for("update");
+      const memory = memoryRows[0];
+      if (memory === undefined) {
+        return null;
+      }
+      const now = new Date();
+      const inserted = await transaction
+        .insert(deliveryFeedback)
+        .values({
+          id: randomUUID(),
+          workspaceId: input.workspaceId,
+          receiptId: input.receiptId,
+          memoryId: input.memoryId,
+          action: input.action,
+          reason:
+            input.reason ??
+            (input.action === "wrong"
+              ? "Delivered learning was marked wrong"
+              : "Delivered learning was forgotten"),
+          actorId: input.actorId ?? null,
+          createdAt: now,
+        })
+        .onConflictDoNothing({
+          target: [
+            deliveryFeedback.receiptId,
+            deliveryFeedback.memoryId,
+            deliveryFeedback.action,
+          ],
+        })
+        .returning();
+      let feedbackRow = inserted[0];
+      if (feedbackRow === undefined) {
+        const existing = await transaction
+          .select()
+          .from(deliveryFeedback)
+          .where(
+            and(
+              eq(deliveryFeedback.receiptId, input.receiptId),
+              eq(deliveryFeedback.memoryId, input.memoryId),
+              eq(deliveryFeedback.action, input.action),
+            ),
+          )
+          .limit(1);
+        feedbackRow = existing[0];
+      }
+      if (feedbackRow === undefined) {
+        throw new Error("Delivery feedback conflicted but could not be loaded");
+      }
+      let updatedMemory = memory;
+      if (
+        input.action === "wrong" &&
+        memory.status === "active"
+      ) {
+        const updated = await transaction
+          .update(memories)
+          .set({
+            status: "suppressed",
+            suppressedAt: now,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(memories.id, input.memoryId),
+              eq(memories.workspaceId, input.workspaceId),
+              eq(memories.status, "active"),
+            ),
+          )
+          .returning();
+        updatedMemory = updated[0] ?? memory;
+      } else if (
+        input.action === "forget" &&
+        (memory.status === "active" || memory.status === "suppressed")
+      ) {
+        const updated = await transaction
+          .update(memories)
+          .set({
+            status: "deleted",
+            suppressedAt: null,
+            deletedAt: now,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(memories.id, input.memoryId),
+              eq(memories.workspaceId, input.workspaceId),
+              inArray(memories.status, ["active", "suppressed"]),
+            ),
+          )
+          .returning();
+        updatedMemory = updated[0] ?? memory;
+      }
+      return DeliveryFeedbackResponseSchema.parse({
+        feedback: rowToFeedback(feedbackRow),
+        memory: rowToMemory(updatedMemory),
+      });
+    });
   }
 
   async inspectLearning(input: {
@@ -1152,7 +1393,18 @@ export class PostgresPilotRepository {
             .map((id) => memoryById.get(id))
             .filter((memory) => memory !== undefined),
           deliveredMemories: (receipt?.memoryIds ?? [])
-            .map((id) => memoryById.get(id))
+            .map((id) => {
+              const memory = memoryById.get(id);
+              const snapshot = receipt?.hits.find(
+                (hit) => hit.memoryId === id,
+              );
+              return memory === undefined
+                ? undefined
+                : {
+                    ...memory,
+                    content: snapshot?.content ?? memory.content,
+                  };
+            })
             .filter((memory) => memory !== undefined),
           receipt: receipt === undefined ? null : rowToReceipt(receipt),
         };

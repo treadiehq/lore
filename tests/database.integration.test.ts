@@ -105,6 +105,12 @@ describe.skipIf(!databaseTestsEnabled)(
       `;
       expect(table).toHaveLength(1);
 
+      const workspace = await new PostgresPilotRepository(
+        connection,
+      ).ensureWorkspaceToken({
+        organization: "repository-integration",
+        token: "repository-integration-token-00000001",
+      });
       const repository = new PostgresMemoryRepository(connection);
       const engine = new SharedMemoryEngine({
         repository,
@@ -113,6 +119,7 @@ describe.skipIf(!databaseTestsEnabled)(
       });
       const interaction = {
         agent: "claude",
+        workspaceId: workspace.workspaceId,
         repo: "payments",
         sessionId: "postgres-session",
         messages: [
@@ -162,7 +169,11 @@ describe.skipIf(!databaseTestsEnabled)(
           component: "testing",
         },
         category: "convention" as const,
-        source: { agent: "human", sessionId: "postgres-manual" },
+        source: {
+          agent: "human",
+          sessionId: "postgres-manual",
+          workspaceId: workspace.workspaceId,
+        },
       };
       const manual = await engine.remember(manualInput);
       await engine.forget(manual.memory.id);
@@ -176,6 +187,12 @@ describe.skipIf(!databaseTestsEnabled)(
     });
 
     it("treats path scope wildcard characters literally", async () => {
+      const workspace = await new PostgresPilotRepository(
+        connection,
+      ).ensureWorkspaceToken({
+        organization: "path-integration",
+        token: "path-integration-token-000000000001",
+      });
       const repository = new PostgresMemoryRepository(connection);
       const engine = new SharedMemoryEngine({
         repository,
@@ -188,7 +205,11 @@ describe.skipIf(!databaseTestsEnabled)(
             content: `Convention for ${path}.`,
             scope: { repo: "test-repo", path },
             category: "convention",
-            source: { agent: "human", sessionId: "path-scope-test" },
+            source: {
+              agent: "human",
+              sessionId: "path-scope-test",
+              workspaceId: workspace.workspaceId,
+            },
           }),
         ),
       );
@@ -197,6 +218,7 @@ describe.skipIf(!databaseTestsEnabled)(
         repository.findActiveScopeCandidates(
           { repo: "test-repo" },
           {
+            workspaceId: workspace.workspaceId,
             paths: [
               "srcXtestYapi/handlers.ts",
               "srcanythingapi/handlers.ts",
@@ -211,7 +233,10 @@ describe.skipIf(!databaseTestsEnabled)(
         await expect(
           repository.findActiveScopeCandidates(
             { repo: "test-repo" },
-            { paths: [`${path}/handlers.ts`] },
+            {
+              workspaceId: workspace.workspaceId,
+              paths: [`${path}/handlers.ts`],
+            },
           ),
         ).resolves.toMatchObject([{ id: scopedMemory.memory.id }]);
       }
@@ -510,6 +535,7 @@ describe.skipIf(!databaseTestsEnabled)(
         agent: "claude",
         sessionId: "session-0",
         scope: { repo: "accounts" },
+        learningScope: { repo: "accounts" },
         task: "Implement account persistence",
         messages: [
           {
@@ -628,10 +654,19 @@ describe.skipIf(!databaseTestsEnabled)(
         context: string;
         packing: { includedMemoryIds: string[] };
         event: { type: string };
+        receipt: {
+          id: string;
+          querySha256: string;
+          retrievalPolicyVersion: string;
+          hits: Array<{ memoryId: string; content: string }>;
+        };
       };
       expect(contextBody.context).toContain("AccountStore");
       expect(contextBody.packing.includedMemoryIds).not.toHaveLength(0);
       expect(contextBody.event.type).toBe("context_delivery");
+      expect(contextBody.receipt.querySha256).toMatch(/^[a-f0-9]{64}$/u);
+      expect(contextBody.receipt.retrievalPolicyVersion).toBe("precision-v1");
+      expect(contextBody.receipt.hits[0]?.content).toContain("AccountStore");
 
       const activity = await fetch(`${baseUrl}/v1/activity`, {
         headers: { authorization: `Bearer ${token}` },
@@ -697,6 +732,113 @@ describe.skipIf(!databaseTestsEnabled)(
       expect(String(provenance[0]?.excerpt)).not.toContain(
         "super-secret-value",
       );
+
+      const receiptDetail = await fetch(
+        `${baseUrl}/v1/context/deliveries/${contextBody.receipt.id}`,
+        { headers: { authorization: `Bearer ${token}` } },
+      );
+      expect(receiptDetail.status).toBe(200);
+      const receiptDetailBody = (await receiptDetail.json()) as {
+        receipt: { hits: Array<{ memoryId: string; content: string }> };
+      };
+      const deliveredMemoryId =
+        receiptDetailBody.receipt.hits[0]?.memoryId;
+      expect(deliveredMemoryId).toBeTruthy();
+      expect(receiptDetailBody.receipt.hits[0]?.content).not.toContain(
+        "super-secret-value",
+      );
+      const receiptOtherTenantToken =
+        "receipt-other-tenant-token-123456789012345";
+      await new PostgresPilotRepository(
+        administration,
+      ).ensureWorkspaceToken({
+        organization: "receipt-other-tenant",
+        token: receiptOtherTenantToken,
+      });
+      const isolatedReceipt = await fetch(
+        `${baseUrl}/v1/context/deliveries/${contextBody.receipt.id}`,
+        {
+          headers: {
+            authorization: `Bearer ${receiptOtherTenantToken}`,
+          },
+        },
+      );
+      expect(isolatedReceipt.status).toBe(404);
+
+      const feedback = await fetch(
+        `${baseUrl}/v1/context/deliveries/${contextBody.receipt.id}/feedback`,
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${token}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            memoryId: deliveredMemoryId,
+            action: "wrong",
+            reason: "password=super-secret-value",
+          }),
+        },
+      );
+      expect(feedback.status).toBe(200);
+      expect(
+        (await feedback.json()) as {
+          feedback: { reason: string };
+          memory: { id: string; status: string };
+        },
+      ).toMatchObject({
+        feedback: { reason: "password=[REDACTED:CREDENTIAL]" },
+        memory: { id: deliveredMemoryId, status: "suppressed" },
+      });
+
+      const nextContext = await fetch(`${baseUrl}/v1/context/deliveries`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          connector: "lore-cli",
+          eventId: "claude:session-1:context-after-feedback",
+          sessionId: "session-1",
+          task: {
+            agent: "claude",
+            repo: "accounts",
+            task: "Implement account persistence with AccountStore",
+          },
+        }),
+      });
+      expect(nextContext.status).toBe(200);
+      expect(
+        (
+          (await nextContext.json()) as {
+            receipt: { memoryIds: string[] };
+          }
+        ).receipt.memoryIds,
+      ).not.toContain(deliveredMemoryId);
+
+      const forgetFeedback = await fetch(
+        `${baseUrl}/v1/context/deliveries/${contextBody.receipt.id}/feedback`,
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${token}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            memoryId: deliveredMemoryId,
+            action: "forget",
+          }),
+        },
+      );
+      expect(forgetFeedback.status).toBe(200);
+      expect(
+        (await forgetFeedback.json()) as {
+          memory: { id: string; status: string };
+        },
+      ).toMatchObject({
+        memory: { id: deliveredMemoryId, status: "deleted" },
+      });
     });
 
     it("serves authenticated tenant-isolated inspection with provenance and lineage", async () => {
@@ -712,6 +854,8 @@ describe.skipIf(!databaseTestsEnabled)(
           eventId: "inspection-api-event",
           agent: "codex",
           sessionId: "inspection-api-session",
+          scope: { repo: "accounts" },
+          learningScope: { repo: "accounts" },
           messages: [
             {
               role: "user",

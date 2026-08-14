@@ -18,7 +18,10 @@ import {
   createRequestHash,
   type PostgresPilotRepository,
 } from "@lore-co/database";
-import { packRelevantMemories } from "@lore-co/retrieval";
+import {
+  packRelevantMemories,
+  RETRIEVAL_POLICY_VERSION,
+} from "@lore-co/retrieval";
 import {
   MEMORY_EMBEDDING_INDEXER,
   PILOT_REPOSITORY,
@@ -140,7 +143,20 @@ export class TurnService {
           },
         ],
       });
-      const observed = await this.#engine.observe(interaction);
+      const nativeLearningWithoutRepository =
+        sanitizedTurn.connector === "lore-cli" &&
+        (sanitizedTurn.agent === "claude" ||
+          sanitizedTurn.agent === "codex") &&
+        learningScope.repo === undefined;
+      const observed = nativeLearningWithoutRepository
+        ? {
+            memories: [],
+            created: 0,
+            duplicates: 0,
+            reconciled: 0,
+            superseded: 0,
+          }
+        : await this.#engine.observe(interaction);
       await this.#indexer.indexMemories(observed.memories);
 
       await Promise.all(
@@ -170,6 +186,9 @@ export class TurnService {
         agent: sanitizedTurn.agent,
         scope: taskScope,
         task: sanitizedTurn.task ?? sanitizedTurn.currentUser.content,
+        ...(sanitizedTurn.diff === undefined
+          ? {}
+          : { diff: sanitizedTurn.diff }),
         ...(sanitizedTurn.files === undefined
           ? {}
           : { files: sanitizedTurn.files }),
@@ -187,11 +206,20 @@ export class TurnService {
         contextResult.memories,
         contextPackingOptions(),
       );
+      const includedIds = new Set(
+        packedContext.memories.map((memory) => memory.id),
+      );
+      const hits = (contextResult.hits ?? []).filter((hit) =>
+        includedIds.has(hit.memory.id),
+      );
       const receipt = await this.#repository.recordDeliveryReceipt({
         workspaceId: workspace.workspaceId,
         eventId: event.id,
         requestId,
         memoryIds: packedContext.memories.map((memory) => memory.id),
+        querySha256: createRequestHash(task),
+        retrievalPolicyVersion: RETRIEVAL_POLICY_VERSION,
+        hits,
         packing: packedContext.packing,
       });
       const response = PairedTurnResponseSchema.parse({
@@ -207,6 +235,7 @@ export class TurnService {
         },
         context: {
           memories: packedContext.memories,
+          hits,
           text: packedContext.text,
           packing: packedContext.packing,
         },

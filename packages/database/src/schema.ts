@@ -2,6 +2,8 @@ import type {
   AuthUserStatus,
   ConfirmationLevel,
   ConnectorEventType,
+  DeliveryFeedbackAction,
+  DeliveryReceipt,
   MemoryCategory,
   MemoryStatus,
   WorkspaceStatus,
@@ -225,9 +227,11 @@ export const memories = pgTable(
   "memories",
   {
     id: uuid("id").primaryKey(),
-    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
-      onDelete: "cascade",
-    }),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, {
+        onDelete: "cascade",
+      }),
     content: text("content").notNull(),
     organization: text("organization"),
     project: text("project"),
@@ -271,6 +275,10 @@ export const memories = pgTable(
     })
       .notNull()
       .defaultNow(),
+    suppressedAt: timestamp("suppressed_at", {
+      withTimezone: true,
+      mode: "date",
+    }),
     deletedAt: timestamp("deleted_at", {
       withTimezone: true,
       mode: "date",
@@ -283,7 +291,11 @@ export const memories = pgTable(
     ),
     check(
       "memories_status_check",
-      sql`${table.status} IN ('active', 'superseded', 'deleted')`,
+      sql`${table.status} IN ('active', 'suppressed', 'superseded', 'deleted')`,
+    ),
+    check(
+      "memories_suppressed_at_check",
+      sql`(${table.status} = 'suppressed' AND ${table.suppressedAt} IS NOT NULL) OR (${table.status} <> 'suppressed' AND ${table.suppressedAt} IS NULL)`,
     ),
     check(
       "memories_deleted_at_check",
@@ -302,8 +314,8 @@ export const memories = pgTable(
       sql`${table.confirmation} IN ('unconfirmed', 'implicit', 'explicit')`,
     ),
     uniqueIndex("memories_fingerprint_idx")
-      .on(table.fingerprint)
-      .where(sql`${table.status} = 'active'`),
+      .on(table.workspaceId, table.fingerprint)
+      .where(sql`${table.status} IN ('active', 'suppressed')`),
     uniqueIndex("memories_supersedes_unique_idx")
       .on(table.supersedesMemoryId)
       .where(sql`${table.supersedesMemoryId} IS NOT NULL`),
@@ -386,7 +398,9 @@ export const memoryProvenance = pgTable(
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
-    memoryId: uuid("memory_id").notNull(),
+    memoryId: uuid("memory_id")
+      .notNull()
+      .references(() => memories.id, { onDelete: "cascade" }),
     eventId: uuid("event_id")
       .notNull()
       .references(() => connectorEvents.id, { onDelete: "cascade" }),
@@ -445,6 +459,11 @@ export const deliveryReceipts = pgTable(
     requestId: text("request_id").notNull(),
     memoryIds: uuid("memory_ids").array().notNull().default([]),
     packing: jsonb("packing").$type<Record<string, unknown>>(),
+    querySha256: text("query_sha256"),
+    retrievalPolicyVersion: text("retrieval_policy_version")
+      .notNull()
+      .default("legacy"),
+    hits: jsonb("hits").$type<DeliveryReceipt["hits"]>().notNull().default([]),
     deliveredAt: timestamp("delivered_at", {
       withTimezone: true,
       mode: "date",
@@ -457,6 +476,46 @@ export const deliveryReceipts = pgTable(
     index("delivery_receipts_workspace_idx").on(
       table.workspaceId,
       table.deliveredAt,
+    ),
+  ],
+);
+
+export const deliveryFeedback = pgTable(
+  "delivery_feedback",
+  {
+    id: uuid("id").primaryKey(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    receiptId: uuid("receipt_id")
+      .notNull()
+      .references(() => deliveryReceipts.id, { onDelete: "cascade" }),
+    memoryId: uuid("memory_id")
+      .notNull()
+      .references(() => memories.id, { onDelete: "cascade" }),
+    action: text("action").$type<DeliveryFeedbackAction>().notNull(),
+    reason: text("reason").notNull(),
+    actorId: text("actor_id"),
+    createdAt: timestamp("created_at", {
+      withTimezone: true,
+      mode: "date",
+    })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("delivery_feedback_receipt_memory_action_idx").on(
+      table.receiptId,
+      table.memoryId,
+      table.action,
+    ),
+    index("delivery_feedback_workspace_idx").on(
+      table.workspaceId,
+      table.createdAt,
+    ),
+    check(
+      "delivery_feedback_action_check",
+      sql`${table.action} IN ('wrong', 'forget')`,
     ),
   ],
 );
@@ -588,6 +647,8 @@ export type MemoryProvenanceRow = typeof memoryProvenance.$inferSelect;
 export type NewMemoryProvenanceRow = typeof memoryProvenance.$inferInsert;
 export type DeliveryReceiptRow = typeof deliveryReceipts.$inferSelect;
 export type NewDeliveryReceiptRow = typeof deliveryReceipts.$inferInsert;
+export type DeliveryFeedbackRow = typeof deliveryFeedback.$inferSelect;
+export type NewDeliveryFeedbackRow = typeof deliveryFeedback.$inferInsert;
 export type IdempotencyRecordRow = typeof idempotencyRecords.$inferSelect;
 export type NewIdempotencyRecordRow = typeof idempotencyRecords.$inferInsert;
 export type DevinSessionCursorRow = typeof devinSessionCursors.$inferSelect;

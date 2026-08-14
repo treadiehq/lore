@@ -78,7 +78,9 @@ test("creates a linked correction and displays complete inspection lineage", asy
 
   await expect(page.getByText("Provenance records")).toBeVisible();
   await expect(page.getByText("lore-cli · observation")).toBeVisible();
-  await page.getByRole("button", { name: "Correct", exact: true }).click();
+  await page
+    .getByRole("button", { name: "That was wrong", exact: true })
+    .click();
   await page
     .getByLabel("Corrected statement")
     .fill("Use BillingAccountStore for account writes.");

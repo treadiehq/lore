@@ -48,6 +48,7 @@ const memory = {
   supersedesMemoryId: null,
   createdAt: "2026-08-13T12:00:01.000Z",
   updatedAt: "2026-08-13T12:00:01.000Z",
+  suppressedAt: null,
   deletedAt: null,
 };
 
@@ -57,6 +58,7 @@ const request = {
   agent: "claude",
   sessionId: "session-1",
   scope: { repo: "accounts" },
+  learningScope: { repo: "accounts" },
   task: "Implement account storage",
   messages: [
     {
@@ -121,7 +123,7 @@ describe("InteractionService auditable observations", () => {
       expect.objectContaining({
         observation: expect.objectContaining({
           scope: { repo: "accounts" },
-          learningScope: {},
+          learningScope: { repo: "accounts" },
         }),
       }),
     );
@@ -129,7 +131,7 @@ describe("InteractionService auditable observations", () => {
       expect.objectContaining({
         workspaceId: workspace.workspaceId,
         eventId: event.id,
-        scope: { organization: "acme" },
+        scope: { organization: "acme", repo: "accounts" },
         messages: [
           expect.objectContaining({
             content:
@@ -177,6 +179,42 @@ describe("InteractionService auditable observations", () => {
     await expect(
       service.observeEvent(request, workspace, "request-2"),
     ).resolves.toMatchObject({ replayed: true, event: { id: event.id } });
+    expect(observe).not.toHaveBeenCalled();
+  });
+
+  it("does not create workspace-wide native learning without a repository", async () => {
+    const observe = vi.fn();
+    const completeObservationEvent = vi.fn(async (input) => ({
+      ...event,
+      payload: { response: input.response },
+    }));
+    const service = new InteractionService(
+      { observe } as unknown as SharedMemoryEngine,
+      { indexMemories: vi.fn(async () => 0) } as unknown as EmbeddingIndexerService,
+      {
+        beginObservationIdempotency: vi.fn(async () => ({ state: "claimed" })),
+        recordObservationEvent: vi.fn(async () => ({
+          event,
+          inserted: true,
+        })),
+        completeObservationEvent,
+        completeObservationIdempotency: vi.fn(async () => undefined),
+        abandonIdempotency: vi.fn(async () => undefined),
+      } as unknown as PostgresPilotRepository,
+    );
+
+    const result = await service.observeEvent(
+      {
+        ...request,
+        eventId: "prompt-without-repository",
+        scope: {},
+        learningScope: {},
+      },
+      workspace,
+      "request-without-repository",
+    );
+
+    expect(result).toMatchObject({ memories: [], created: 0, duplicates: 0 });
     expect(observe).not.toHaveBeenCalled();
   });
 

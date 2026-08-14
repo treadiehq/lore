@@ -368,21 +368,21 @@ function activityOutcome(activity: ActivityItem): string {
     return count === 0 ? "No matching learning" : `${count} delivered`;
   }
   if (activity.receipt === null) {
-    return "Not applied";
+    return "No delivery receipt";
   }
   if (activity.deliveredMemories.length === 0) {
     return "No matching learning";
   }
   if (isAcceptanceTestActivity(activity)) {
-    return "Context delivery verified";
+    return "Injection verified";
   }
   const otherCount = otherAppliedMemories(activity).length;
   if (otherCount === 0 && primaryMessageWasApplied(activity)) {
-    return "Captured and applied";
+    return "Captured and injected";
   }
   return `${otherCount} other ${
     otherCount === 1 ? "learning" : "learnings"
-  } applied`;
+  } injected`;
 }
 
 function capitalize(value: string): string {
@@ -402,7 +402,7 @@ function capitalize(value: string): string {
         </h1>
         <p class="lore-page-description mt-1.5">
           Review what connected tools observed, what became a learning, and what
-          was applied to later work.
+          was injected into later work.
         </p>
       </div>
       <button
@@ -634,7 +634,7 @@ function capitalize(value: string): string {
                     v-if="activity.event.type === 'paired_turn' && primaryMessageWasApplied(activity)"
                     class="rounded border border-lore-success/30 bg-lore-success-soft px-1.5 py-0.5 text-[0.625rem] font-medium text-lore-success"
                   >
-                    Applied
+                    Injected
                   </span>
                 </div>
                 <p class="mt-2 whitespace-pre-wrap text-sm leading-6 text-lore-text">
@@ -683,7 +683,7 @@ function capitalize(value: string): string {
                       {{
                         isAcceptanceTestActivity(activity)
                           ? "Validation result"
-                          : "Other learnings applied"
+                          : "Other learnings injected"
                       }}
                     </h2>
                     <span class="text-xs tabular-nums text-lore-text-muted">
@@ -705,6 +705,14 @@ function capitalize(value: string): string {
                   </ul>
                 </section>
               </div>
+
+              <NuxtLink
+                v-if="activity.receipt"
+                :to="`/receipts/${activity.receipt.id}`"
+                class="lore-link mt-4 inline-block text-xs"
+              >
+                View exact injection receipt
+              </NuxtLink>
 
               <details class="mt-4">
                 <summary

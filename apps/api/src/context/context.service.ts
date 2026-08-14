@@ -1,20 +1,32 @@
-import { ConflictException, Inject, Injectable } from "@nestjs/common";
+import {
+  ConflictException,
+  Inject,
+  Injectable,
+  NotFoundException,
+} from "@nestjs/common";
 import {
   ContextDeliveryRequestSchema,
   ContextDeliveryResponseSchema,
   SharedMemoryEngine,
+  redactSensitiveText,
   redactUnknown,
   type AuthenticatedWorkspace,
   type AgentTask,
   type ContextDeliveryRequest,
   type ContextDeliveryResponse,
+  type DeliveryFeedbackRequest,
+  type DeliveryFeedbackResponse,
+  type DeliveryReceiptDetail,
   type GetContextResponse,
 } from "@lore-co/core";
 import {
   createRequestHash,
   type PostgresPilotRepository,
 } from "@lore-co/database";
-import { packRelevantMemories } from "@lore-co/retrieval";
+import {
+  packRelevantMemories,
+  RETRIEVAL_POLICY_VERSION,
+} from "@lore-co/retrieval";
 import {
   PILOT_REPOSITORY,
   SHARED_MEMORY_ENGINE,
@@ -22,7 +34,7 @@ import {
 import { contextPackingOptions } from "../retrieval/context-packing.js";
 
 export type FormattedContextResponse = Required<
-  Pick<GetContextResponse, "memories" | "context" | "packing">
+  Pick<GetContextResponse, "memories" | "hits" | "context" | "packing">
 >;
 
 @Injectable()
@@ -56,7 +68,7 @@ export class ContextService {
               scope: { ...scope, organization: workspace.organization },
             };
           })();
-    const { memories } = await this.#engine.getContext(
+    const { memories, hits = [] } = await this.#engine.getContext(
       tenantSafeTask,
       workspace === undefined
         ? undefined
@@ -66,8 +78,10 @@ export class ContextService {
       memories,
       contextPackingOptions(task.limit),
     );
+    const includedIds = new Set(packed.memories.map((memory) => memory.id));
     return {
       memories: packed.memories,
+      hits: hits.filter((hit) => includedIds.has(hit.memory.id)),
       context: packed.text,
       packing: packed.packing,
     };
@@ -85,6 +99,7 @@ export class ContextService {
     const context = await this.getContext(delivery.task, workspace);
     const storedResponse = {
       memories: context.memories,
+      hits: context.hits,
       context: context.context,
       packing: context.packing,
     };
@@ -114,6 +129,7 @@ export class ContextService {
       }
       const parsed = ContextDeliveryResponseSchema.pick({
         memories: true,
+        hits: true,
         context: true,
         packing: true,
       }).safeParse(recorded.event.payload.response);
@@ -130,6 +146,9 @@ export class ContextService {
       eventId: recorded.event.id,
       requestId: recorded.event.requestId,
       memoryIds: response.memories.map((memory) => memory.id),
+      querySha256: createRequestHash(delivery.task),
+      retrievalPolicyVersion: RETRIEVAL_POLICY_VERSION,
+      hits: response.hits ?? [],
       ...(response.packing === undefined
         ? {}
         : { packing: response.packing }),
@@ -140,5 +159,42 @@ export class ContextService {
       replayed,
       ...response,
     });
+  }
+
+  async getDelivery(
+    receiptId: string,
+    workspace: AuthenticatedWorkspace,
+  ): Promise<DeliveryReceiptDetail> {
+    const detail = await this.#repository.getDeliveryReceiptDetail({
+      workspaceId: workspace.workspaceId,
+      receiptId,
+    });
+    if (detail === null) {
+      throw new NotFoundException("Delivery receipt not found");
+    }
+    return detail;
+  }
+
+  async recordFeedback(
+    receiptId: string,
+    input: DeliveryFeedbackRequest,
+    workspace: AuthenticatedWorkspace,
+  ): Promise<DeliveryFeedbackResponse> {
+    const reason =
+      input.reason === undefined
+        ? undefined
+        : redactSensitiveText(input.reason).text;
+    const result = await this.#repository.recordDeliveryFeedback({
+      workspaceId: workspace.workspaceId,
+      receiptId,
+      memoryId: input.memoryId,
+      action: input.action,
+      ...(reason === undefined ? {} : { reason }),
+      actorId: workspace.tokenId,
+    });
+    if (result === null) {
+      throw new NotFoundException("Delivery receipt or learning not found");
+    }
+    return result;
   }
 }

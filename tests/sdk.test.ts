@@ -16,6 +16,7 @@ const memory = {
   supersedesMemoryId: null,
   createdAt: "2026-08-12T20:00:00.000Z",
   updatedAt: "2026-08-12T20:00:00.000Z",
+  suppressedAt: null,
   deletedAt: null,
 };
 

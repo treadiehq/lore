@@ -78,7 +78,8 @@ describe("hybrid retrieval", () => {
       { workspaceId },
     );
 
-    expect(result.map((item) => item.id)).toEqual([memory.id]);
+    expect(result.map((item) => item.memory.id)).toEqual([memory.id]);
+    expect(result[0]?.reasons).toContain("semantic");
     expect(provider.embed).toHaveBeenCalledOnce();
     expect(store.searchCalls[0]?.workspaceId).toBe(workspaceId);
   });
@@ -108,7 +109,7 @@ describe("hybrid retrieval", () => {
       { workspaceId },
     );
 
-    expect(result.map((item) => item.id)).toEqual([memory.id]);
+    expect(result.map((item) => item.memory.id)).toEqual([memory.id]);
   });
 
   it("keeps exact lexical identifiers ahead of semantic-only candidates", async () => {
@@ -145,10 +146,52 @@ describe("hybrid retrieval", () => {
       { workspaceId },
     );
 
-    expect(result.map((item) => item.id)).toEqual([
+    expect(result.map((item) => item.memory.id)).toEqual([
       exact.memory.id,
       semanticMemory.id,
     ]);
+  });
+
+  it("rejects a semantic hit scoped to an unrelated file", async () => {
+    const { repository } = await memoryFixture();
+    const engine = new SharedMemoryEngine({
+      repository,
+      extractor: new HeuristicMemoryExtractor(),
+      retriever: new ScopedKeywordMemoryRetriever(repository),
+    });
+    const scoped = await engine.remember({
+      content: "Greeting constants use the product codename.",
+      scope: {
+        organization: "acme",
+        repo: "billing",
+        path: "src/greeting.ts",
+      },
+      source: { agent: "human", workspaceId },
+    });
+    const store = new FakeSemanticStore();
+    store.memories = [scoped.memory];
+    const retriever = new HybridMemoryRetriever(
+      new ScopedKeywordMemoryRetriever(repository),
+      {
+        model: "test-embedding",
+        dimensions: EMBEDDING_DIMENSIONS,
+        embed: async () => Array(EMBEDDING_DIMENSIONS).fill(0),
+      },
+      store,
+    );
+
+    const result = await retriever.retrieve(
+      {
+        agent: "codex",
+        organization: "acme",
+        repo: "billing",
+        task: "Inspect this file",
+        files: ["src/unrelated.ts"],
+      },
+      { workspaceId },
+    );
+
+    expect(result).toEqual([]);
   });
 
   it("does not call semantic search without trusted workspace identity", async () => {

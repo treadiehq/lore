@@ -303,7 +303,7 @@ first. `--configure-secrets` requires authenticated `gh` access and replaces
 the named Actions secrets and variables. Commit the generated `.github` files,
 then add `lore:codex-review` or `lore:devin-review` to a pull request.
 
-Generated workflows default to `LORE_CLI_VERSION=v0.1.2` and
+Generated workflows default to `LORE_CLI_VERSION=v0.1.3` and
 `LORE_CLI_REPOSITORY=treadiehq/lore`. The release repository must be publicly
 readable by GitHub-hosted runners. Generated jobs download the binary and check
 it against that release's SHA-256 manifest before invoking `lore`. Override
@@ -726,7 +726,7 @@ expose. Native Claude/Codex resumed sessions, API-created Devin sessions, and
 the real three-agent chain were exercised successfully in a local credentialed
 run on August 13, 2026. Both GitHub provider review/correction paths also passed
 target-repository preflight using a packed current CLI artifact. Standalone
-release `v0.1.2` provides checksum-verified macOS and Linux binaries. The
+release `v0.1.3` provides checksum-verified macOS and Linux binaries. The
 private Devin hook prototype is not an installable plugin. Every live gate must
 still be rerun in the customer's environment.
 
@@ -1007,6 +1007,6 @@ binary smoke; it does not run this complete manual checklist.
 - External model hosts need one-time host-bridge integration.
 - Delivery receipts prove context delivery, not that an LLM obeyed it.
 - Real-agent smoke suites require customer vendor credentials.
-- Standalone macOS and Linux binaries are available in GitHub release `v0.1.2`.
+- Standalone macOS and Linux binaries are available in GitHub release `v0.1.3`.
   The CLI, SDK, core, and generic adapter are available on npm.
 - Lore does not provide dream mode or company-wide search.

@@ -11,6 +11,7 @@ import {
   type MemoryRepository,
   type MemoryScope,
   type MemoryUpdate,
+  type RepositoryContext,
   type SupersedeMemoryResult,
 } from "@lore-co/core";
 import {
@@ -100,7 +101,7 @@ export const closePostgresDatabase = closeDatabase;
 function rowToMemory(row: MemoryRow): Memory {
   return MemorySchema.parse({
     id: row.id,
-    ...(row.workspaceId === null ? {} : { workspaceId: row.workspaceId }),
+    workspaceId: row.workspaceId,
     content: row.content,
     scope: {
       ...(row.organization === null
@@ -122,7 +123,7 @@ function rowToMemory(row: MemoryRow): Memory {
         ? {}
         : { messageId: row.sourceMessageId }),
       ...(row.sourceRawText === null ? {} : { rawText: row.sourceRawText }),
-      ...(row.workspaceId === null ? {} : { workspaceId: row.workspaceId }),
+      workspaceId: row.workspaceId,
       ...(row.sourceEventId === null ? {} : { eventId: row.sourceEventId }),
       ...(row.sourceRedacted ? { redacted: true } : {}),
     },
@@ -135,14 +136,24 @@ function rowToMemory(row: MemoryRow): Memory {
     supersedesMemoryId: row.supersedesMemoryId,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
+    suppressedAt: row.suppressedAt?.toISOString() ?? null,
     deletedAt: row.deletedAt?.toISOString() ?? null,
   });
 }
 
+function requiredMemoryWorkspaceId(memory: Memory): string {
+  const workspaceId = memory.workspaceId ?? memory.source.workspaceId;
+  if (workspaceId === undefined) {
+    throw new Error("Database memories require a workspace ID");
+  }
+  return workspaceId;
+}
+
 function memoryToRow(memory: Memory): NewMemoryRow {
+  const workspaceId = requiredMemoryWorkspaceId(memory);
   return {
     id: memory.id,
-    workspaceId: memory.workspaceId ?? memory.source.workspaceId ?? null,
+    workspaceId,
     content: memory.content,
     organization: memory.scope.organization ?? null,
     project: memory.scope.project ?? null,
@@ -164,6 +175,8 @@ function memoryToRow(memory: Memory): NewMemoryRow {
     supersedesMemoryId: memory.supersedesMemoryId,
     createdAt: new Date(memory.createdAt),
     updatedAt: new Date(memory.updatedAt),
+    suppressedAt:
+      memory.suppressedAt === null ? null : new Date(memory.suppressedAt),
     deletedAt:
       memory.deletedAt === null ? null : new Date(memory.deletedAt),
   };
@@ -246,12 +259,13 @@ export class PostgresMemoryRepository implements MemoryRepository {
 
   async insert(memoryInput: Memory): Promise<InsertMemoryResult> {
     const memory = MemorySchema.parse(memoryInput);
+    const workspaceId = requiredMemoryWorkspaceId(memory);
     const inserted = await this.#db
       .insert(memories)
       .values(memoryToRow(memory))
       .onConflictDoNothing({
-        target: memories.fingerprint,
-        where: eq(memories.status, "active"),
+        target: [memories.workspaceId, memories.fingerprint],
+        where: inArray(memories.status, ["active", "suppressed"]),
       })
       .returning();
     const insertedRow = inserted[0];
@@ -264,8 +278,9 @@ export class PostgresMemoryRepository implements MemoryRepository {
       .from(memories)
       .where(
         and(
+          eq(memories.workspaceId, workspaceId),
           eq(memories.fingerprint, memory.fingerprint),
-          eq(memories.status, "active"),
+          inArray(memories.status, ["active", "suppressed"]),
         ),
       )
       .limit(1);
@@ -278,18 +293,34 @@ export class PostgresMemoryRepository implements MemoryRepository {
     return { memory: rowToMemory(existingRow), inserted: false };
   }
 
-  async get(id: string): Promise<Memory | null> {
+  async get(
+    id: string,
+    context: RepositoryContext = {},
+  ): Promise<Memory | null> {
     const rows = await this.#db
       .select()
       .from(memories)
-      .where(eq(memories.id, id))
+      .where(
+        and(
+          eq(memories.id, id),
+          ...(context.workspaceId === undefined
+            ? []
+            : [eq(memories.workspaceId, context.workspaceId)]),
+        ),
+      )
       .limit(1);
     return rows[0] === undefined ? null : rowToMemory(rows[0]);
   }
 
-  async list(input: ListMemoriesDto = {}): Promise<ListMemoriesResponse> {
+  async list(
+    input: ListMemoriesDto = {},
+    context: RepositoryContext = {},
+  ): Promise<ListMemoriesResponse> {
     const filters = ListMemoriesDtoSchema.parse(input);
     const conditions: SQL[] = [];
+    if (context.workspaceId !== undefined) {
+      conditions.push(eq(memories.workspaceId, context.workspaceId));
+    }
     if (filters.scope?.organization !== undefined) {
       conditions.push(
         eq(memories.organization, filters.scope.organization),
@@ -350,6 +381,7 @@ export class PostgresMemoryRepository implements MemoryRepository {
   async update(
     id: string,
     updateInput: MemoryUpdate,
+    context: RepositoryContext = {},
   ): Promise<Memory | null> {
     const update = MemoryUpdateSchema.parse(updateInput);
     const values: Partial<NewMemoryRow> = {
@@ -405,7 +437,7 @@ export class PostgresMemoryRepository implements MemoryRepository {
       update.category !== undefined ||
       update.supersedesMemoryId !== undefined
     ) {
-      const current = await this.get(id);
+      const current = await this.get(id, context);
       if (current === null) {
         return null;
       }
@@ -422,6 +454,10 @@ export class PostgresMemoryRepository implements MemoryRepository {
     if (update.supersedesMemoryId !== undefined) {
       values.supersedesMemoryId = update.supersedesMemoryId;
     }
+    if (update.suppressedAt !== undefined) {
+      values.suppressedAt =
+        update.suppressedAt === null ? null : new Date(update.suppressedAt);
+    }
     if (update.deletedAt !== undefined) {
       values.deletedAt =
         update.deletedAt === null ? null : new Date(update.deletedAt);
@@ -430,7 +466,14 @@ export class PostgresMemoryRepository implements MemoryRepository {
     const rows = await this.#db
       .update(memories)
       .set(values)
-      .where(eq(memories.id, id))
+      .where(
+        and(
+          eq(memories.id, id),
+          ...(context.workspaceId === undefined
+            ? []
+            : [eq(memories.workspaceId, context.workspaceId)]),
+        ),
+      )
       .returning();
     return rows[0] === undefined ? null : rowToMemory(rows[0]);
   }
@@ -438,16 +481,22 @@ export class PostgresMemoryRepository implements MemoryRepository {
   async softDelete(
     id: string,
     deletedAt = new Date().toISOString(),
+    context: RepositoryContext = {},
   ): Promise<Memory | null> {
-    const current = await this.get(id);
+    const current = await this.get(id, context);
     if (current === null || current.status === "deleted") {
       return current;
     }
-    return this.update(id, {
-      status: "deleted",
-      deletedAt,
-      updatedAt: deletedAt,
-    });
+    return this.update(
+      id,
+      {
+        status: "deleted",
+        suppressedAt: null,
+        deletedAt,
+        updatedAt: deletedAt,
+      },
+      context,
+    );
   }
 
   async findActiveScopeCandidates(
@@ -455,6 +504,21 @@ export class PostgresMemoryRepository implements MemoryRepository {
     options: FindActiveCandidatesOptions = {},
   ): Promise<Memory[]> {
     const conditions = activeScopeConditions(scope, options);
+    if (options.requirePathOrComponentMatch === true) {
+      const signalConditions: SQL[] = [
+        ...(options.paths ?? []).map(
+          (path) =>
+            sql`(${path} = ${memories.path} OR left(${path}, length(${memories.path}) + 1) = (${memories.path} || '/'))`,
+        ),
+        ...((options.components?.length ?? 0) === 0
+          ? []
+          : [inArray(memories.component, [...(options.components ?? [])])]),
+      ];
+      if (signalConditions.length === 0) {
+        return [];
+      }
+      conditions.push(or(...signalConditions) as SQL);
+    }
     const keywords = [
       ...new Set(
         (options.keywords ?? [])
@@ -579,8 +643,16 @@ export class PostgresMemoryRepository implements MemoryRepository {
   async supersede(
     memoryId: string,
     replacementInput: Memory,
+    context: RepositoryContext = {},
   ): Promise<SupersedeMemoryResult> {
     const replacement = MemorySchema.parse(replacementInput);
+    const workspaceId = requiredMemoryWorkspaceId(replacement);
+    if (
+      context.workspaceId !== undefined &&
+      context.workspaceId !== workspaceId
+    ) {
+      throw new Error(`Memory not found: ${memoryId}`);
+    }
     if (replacement.supersedesMemoryId !== memoryId) {
       throw new Error("Replacement must reference the memory it supersedes");
     }
@@ -589,7 +661,12 @@ export class PostgresMemoryRepository implements MemoryRepository {
       const currentRows = await transaction
         .select()
         .from(memories)
-        .where(eq(memories.id, memoryId))
+        .where(
+          and(
+            eq(memories.id, memoryId),
+            eq(memories.workspaceId, workspaceId),
+          ),
+        )
         .limit(1)
         .for("update");
       const current = currentRows[0];
@@ -602,8 +679,9 @@ export class PostgresMemoryRepository implements MemoryRepository {
           .from(memories)
           .where(
             and(
+              eq(memories.workspaceId, workspaceId),
               eq(memories.fingerprint, replacement.fingerprint),
-              eq(memories.status, "active"),
+              inArray(memories.status, ["active", "suppressed"]),
             ),
           )
           .limit(1);
@@ -616,9 +694,9 @@ export class PostgresMemoryRepository implements MemoryRepository {
         }
         throw new Error(`Memory has already been superseded: ${memoryId}`);
       }
-      if (current.status !== "active") {
+      if (current.status !== "active" && current.status !== "suppressed") {
         throw new Error(
-          `Only active memories can be superseded: ${memoryId} is ${current.status}`,
+          `Only active or suppressed memories can be superseded: ${memoryId} is ${current.status}`,
         );
       }
 
@@ -626,8 +704,8 @@ export class PostgresMemoryRepository implements MemoryRepository {
         .insert(memories)
         .values(memoryToRow(replacement))
         .onConflictDoNothing({
-          target: memories.fingerprint,
-          where: eq(memories.status, "active"),
+          target: [memories.workspaceId, memories.fingerprint],
+          where: inArray(memories.status, ["active", "suppressed"]),
         })
         .returning();
       let replacementRow = replacementRows[0];
@@ -637,8 +715,9 @@ export class PostgresMemoryRepository implements MemoryRepository {
           .from(memories)
           .where(
             and(
+              eq(memories.workspaceId, workspaceId),
               eq(memories.fingerprint, replacement.fingerprint),
-              eq(memories.status, "active"),
+              inArray(memories.status, ["active", "suppressed"]),
             ),
           )
           .limit(1);
@@ -658,8 +737,14 @@ export class PostgresMemoryRepository implements MemoryRepository {
         .set({
           status: "superseded",
           updatedAt: new Date(replacement.createdAt),
+          suppressedAt: null,
         })
-        .where(eq(memories.id, memoryId))
+        .where(
+          and(
+            eq(memories.id, memoryId),
+            eq(memories.workspaceId, workspaceId),
+          ),
+        )
         .returning();
       const supersededRow = updatedRows[0];
       if (supersededRow === undefined) {

@@ -46,6 +46,7 @@ function memory(input: {
     supersedesMemoryId: input.supersedesMemoryId ?? null,
     createdAt: input.createdAt ?? now,
     updatedAt: input.createdAt ?? now,
+    suppressedAt: null,
     deletedAt: null,
   };
 }

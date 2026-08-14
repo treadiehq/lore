@@ -407,7 +407,7 @@ async function postLore(
         ...(idempotencyKey === undefined
           ? {}
           : { "idempotency-key": idempotencyKey }),
-        "user-agent": "@lore-co/devin-plugin/0.1.2",
+        "user-agent": "@lore-co/devin-plugin/0.1.3",
       },
       body: serializedBody,
       signal,

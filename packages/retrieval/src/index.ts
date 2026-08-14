@@ -8,8 +8,12 @@ import {
   type MemoryRepository,
   type MemoryRetriever,
   type MemoryScope,
+  type RetrievalHit,
+  type RetrievalMatchReason,
 } from "@lore-co/core";
 export * from "./context-packing.js";
+
+export const RETRIEVAL_POLICY_VERSION = "precision-v1";
 
 const STOP_WORDS = new Set([
   "a",
@@ -97,23 +101,23 @@ const CATEGORY_BOOSTS: Readonly<Record<MemoryCategory, number>> = {
   other: 1,
 };
 
-function relevanceScore(
+function lexicalEvidence(
   memory: Memory,
   queryTerms: ReadonlySet<string>,
   searchText: string,
-): number {
+): { score: number; matchedTerms: string[] } {
   const memoryTerms = new Set(tokenizeForMemorySearch(memory.content));
-  let overlap = 0;
+  const matchedTerms: string[] = [];
   let score = 0;
   for (const term of queryTerms) {
     if (!memoryTerms.has(term)) {
       continue;
     }
-    overlap += 1;
+    matchedTerms.push(term);
     score += 1 + Math.min(term.length, 20) / 20;
   }
-  if (overlap === 0) {
-    return 0;
+  if (matchedTerms.length === 0) {
+    return { score: 0, matchedTerms };
   }
 
   const normalizedContent = memory.content.toLocaleLowerCase();
@@ -138,7 +142,97 @@ function relevanceScore(
     Number(memory.scope.repo !== undefined) +
     Number(memory.scope.path !== undefined) +
     Number(memory.scope.component !== undefined);
-  return score * CATEGORY_BOOSTS[memory.category] + specificity * 0.1;
+  return {
+    score: score * CATEGORY_BOOSTS[memory.category] + specificity * 0.1,
+    matchedTerms,
+  };
+}
+
+function pathApplies(memoryPath: string, taskPaths: readonly string[]): boolean {
+  return taskPaths.some(
+    (path) => path === memoryPath || path.startsWith(`${memoryPath}/`),
+  );
+}
+
+function rankedHit(
+  memory: Memory,
+  task: AgentTask,
+  queryTerms: ReadonlySet<string>,
+  searchText: string,
+): Omit<RetrievalHit, "lexicalRank" | "semanticRank"> | null {
+  const taskScope = normalizeTaskScope(task);
+  const nativeAgent = task.agent === "claude" || task.agent === "codex";
+  if (
+    nativeAgent &&
+    (taskScope.repo === undefined ||
+      (memory.scope.repo !== undefined &&
+        memory.scope.repo !== taskScope.repo))
+  ) {
+    return null;
+  }
+
+  const evidence = lexicalEvidence(memory, queryTerms, searchText);
+  const reasons = new Set<RetrievalMatchReason>();
+  let score = evidence.score;
+  if (
+    taskScope.repo !== undefined &&
+    memory.scope.repo !== undefined &&
+    taskScope.repo === memory.scope.repo
+  ) {
+    reasons.add("repository");
+    score += 1;
+  }
+  const paths = [
+    ...new Set(
+      [taskScope.path, ...(task.files ?? [])].filter(
+        (value): value is string => value !== undefined,
+      ),
+    ),
+  ];
+  if (
+    memory.scope.path !== undefined &&
+    pathApplies(memory.scope.path, paths)
+  ) {
+    reasons.add("path");
+    score += 5;
+  }
+  const components = new Set([
+    taskScope.component,
+    ...(task.components ?? []),
+  ]);
+  if (
+    memory.scope.component !== undefined &&
+    components.has(memory.scope.component)
+  ) {
+    reasons.add("component");
+    score += 4;
+  }
+  const memoryTerms = new Set(tokenizeForMemorySearch(memory.content));
+  const symbolMatch = (task.symbols ?? []).some((symbol) =>
+    tokenizeForMemorySearch(symbol).some((term) => memoryTerms.has(term)),
+  );
+  if (symbolMatch) {
+    reasons.add("symbol");
+    score += 4;
+  }
+  if (evidence.matchedTerms.length > 0) {
+    reasons.add("lexical");
+  }
+
+  const strongMatch =
+    reasons.has("path") ||
+    reasons.has("component") ||
+    reasons.has("symbol") ||
+    evidence.matchedTerms.length >= 2;
+  if ((nativeAgent && !strongMatch) || (!nativeAgent && score <= 0)) {
+    return null;
+  }
+  return {
+    memory,
+    score,
+    reasons: [...reasons],
+    matchedTerms: evidence.matchedTerms,
+  };
 }
 
 export interface ScopedKeywordMemoryRetrieverOptions {
@@ -163,38 +257,75 @@ export class ScopedKeywordMemoryRetriever implements MemoryRetriever {
   async retrieve(
     taskInput: AgentTask,
     context?: { workspaceId?: string },
-  ): Promise<Memory[]> {
+  ): Promise<RetrievalHit[]> {
     const task = AgentTaskSchema.parse(taskInput);
     const searchText = taskSearchText(task);
-    const terms = tokenizeForMemorySearch(searchText);
-    if (terms.length === 0) {
+    const priorityText = [
+      task.task,
+      ...(task.files ?? []),
+      ...(task.components ?? []),
+      ...(task.symbols ?? []),
+    ].join("\n");
+    const terms = [
+      ...new Set([
+        ...tokenizeForMemorySearch(priorityText),
+        ...tokenizeForMemorySearch(task.diff ?? ""),
+      ]),
+    ];
+    const scope = normalizeTaskScope(task);
+    const paths = [
+      ...new Set(
+        [scope.path, ...(task.files ?? [])].filter(
+          (value): value is string => value !== undefined,
+        ),
+      ),
+    ];
+    const components = [
+      ...new Set([
+        ...(task.components ?? []),
+        ...(task.component === undefined ? [] : [task.component]),
+      ]),
+    ];
+    if (terms.length === 0 && paths.length === 0 && components.length === 0) {
       return [];
     }
 
-    const candidates = await this.#repository.findActiveScopeCandidates(
-      normalizeTaskScope(task),
-      {
-        ...(context?.workspaceId === undefined
-          ? {}
-          : { workspaceId: context.workspaceId }),
-        keywords: terms,
-        ...(task.files === undefined ? {} : { paths: task.files }),
-        components: [
-          ...(task.components ?? []),
-          ...(task.component === undefined ? [] : [task.component]),
-        ],
-        limit: this.#candidateLimit,
-      },
-    );
+    const repositoryContext = {
+      ...(context?.workspaceId === undefined
+        ? {}
+        : { workspaceId: context.workspaceId }),
+      paths,
+      components,
+      limit: this.#candidateLimit,
+    };
+    const [lexicalCandidates, structuralCandidates] = await Promise.all([
+      terms.length === 0
+        ? Promise.resolve([])
+        : this.#repository.findActiveScopeCandidates(scope, {
+            ...repositoryContext,
+            keywords: terms,
+          }),
+      paths.length === 0 && components.length === 0
+        ? Promise.resolve([])
+        : this.#repository.findActiveScopeCandidates(scope, {
+            ...repositoryContext,
+            requirePathOrComponentMatch: true,
+          }),
+    ]);
+    const candidates = [
+      ...new Map(
+        [...lexicalCandidates, ...structuralCandidates].map((memory) => [
+          memory.id,
+          memory,
+        ]),
+      ).values(),
+    ];
     const queryTerms = new Set(terms);
     const limit = Math.min(task.limit ?? this.#defaultLimit, 10);
 
     return candidates
-      .map((memory) => ({
-        memory,
-        score: relevanceScore(memory, queryTerms, searchText),
-      }))
-      .filter((candidate) => candidate.score > 0)
+      .map((memory) => rankedHit(memory, task, queryTerms, searchText))
+      .filter((candidate) => candidate !== null)
       .sort(
         (left, right) =>
           right.score - left.score ||
@@ -202,7 +333,11 @@ export class ScopedKeywordMemoryRetriever implements MemoryRetriever {
           left.memory.id.localeCompare(right.memory.id),
       )
       .slice(0, limit)
-      .map(({ memory }) => memory);
+      .map((hit, index) => ({
+        ...hit,
+        lexicalRank: index + 1,
+        semanticRank: null,
+      }));
   }
 }
 
@@ -381,7 +516,7 @@ export class HybridMemoryRetriever implements MemoryRetriever {
   async retrieve(
     taskInput: AgentTask,
     context?: { workspaceId?: string },
-  ): Promise<Memory[]> {
+  ): Promise<RetrievalHit[]> {
     const task = AgentTaskSchema.parse(taskInput);
     const lexicalPromise = this.#lexical.retrieve(task, context);
     if (context?.workspaceId === undefined) {
@@ -417,28 +552,74 @@ export class HybridMemoryRetriever implements MemoryRetriever {
       lexicalPromise,
       semanticPromise,
     ]);
-    const scores = new Map<
-      string,
-      { memory: Memory; score: number; bestRank: number }
-    >();
-    const add = (
-      memories: readonly Memory[],
-      weight: number,
-    ): void => {
-      memories.forEach((memory, index) => {
+    const scores = new Map<string, RetrievalHit & { bestRank: number }>();
+    const addLexical = (hits: readonly RetrievalHit[]): void => {
+      hits.forEach((hit, index) => {
         const rank = index + 1;
-        const current = scores.get(memory.id);
-        scores.set(memory.id, {
-          memory,
+        const current = scores.get(hit.memory.id);
+        scores.set(hit.memory.id, {
+          ...hit,
           score:
             (current?.score ?? 0) +
-            weight / (this.#reciprocalRankConstant + rank),
+            1 / (this.#reciprocalRankConstant + rank),
           bestRank: Math.min(current?.bestRank ?? rank, rank),
         });
       });
     };
-    add(lexical, 1);
-    add(semantic, this.#semanticWeight);
+    const addSemantic = (memories: readonly Memory[]): void => {
+      const taskScope = normalizeTaskScope(task);
+      const nativeAgent = task.agent === "claude" || task.agent === "codex";
+      const taskPaths = [
+        ...new Set(
+          [taskScope.path, ...(task.files ?? [])].filter(
+            (value): value is string => value !== undefined,
+          ),
+        ),
+      ];
+      const taskComponents = new Set([
+        taskScope.component,
+        ...(task.components ?? []),
+      ]);
+      memories.forEach((memory, index) => {
+        if (
+          (memory.scope.path !== undefined &&
+            !pathApplies(memory.scope.path, taskPaths)) ||
+          (memory.scope.component !== undefined &&
+            !taskComponents.has(memory.scope.component)) ||
+          nativeAgent &&
+          (taskScope.repo === undefined ||
+            (memory.scope.repo !== undefined &&
+              memory.scope.repo !== taskScope.repo))
+        ) {
+          return;
+        }
+        const rank = index + 1;
+        const current = scores.get(memory.id);
+        const reasons = new Set<RetrievalMatchReason>([
+          ...(current?.reasons ?? []),
+          "semantic",
+        ]);
+        if (
+          taskScope.repo !== undefined &&
+          memory.scope.repo === taskScope.repo
+        ) {
+          reasons.add("repository");
+        }
+        scores.set(memory.id, {
+          memory,
+          score:
+            (current?.score ?? 0) +
+            this.#semanticWeight / (this.#reciprocalRankConstant + rank),
+          reasons: [...reasons],
+          matchedTerms: current?.matchedTerms ?? [],
+          lexicalRank: current?.lexicalRank ?? null,
+          semanticRank: rank,
+          bestRank: Math.min(current?.bestRank ?? rank, rank),
+        });
+      });
+    };
+    addLexical(lexical);
+    addSemantic(semantic);
     const limit = Math.min(task.limit ?? this.#defaultLimit, 10);
     return [...scores.values()]
       .sort(
@@ -449,6 +630,6 @@ export class HybridMemoryRetriever implements MemoryRetriever {
           left.memory.id.localeCompare(right.memory.id),
       )
       .slice(0, limit)
-      .map(({ memory }) => memory);
+      .map(({ bestRank: _bestRank, ...hit }) => hit);
   }
 }
