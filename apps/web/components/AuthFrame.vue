@@ -43,32 +43,66 @@ withDefaults(
         </div>
 
         <div class="auth-product-scene mt-7" aria-hidden="true">
+          <div class="auth-session-sheet auth-session-sheet-codex">
+            <span class="auth-session-logo">
+              <img
+                :src="'/img/codex.svg'"
+                alt=""
+                width="16"
+                height="16"
+                class="size-4 object-contain"
+              />
+            </span>
+            <span>Codex session</span>
+          </div>
+
+          <div class="auth-session-sheet auth-session-sheet-claude">
+            <span class="auth-session-logo">
+              <img
+                :src="'/img/claude.svg'"
+                alt=""
+                width="16"
+                height="16"
+                class="size-4 object-contain"
+              />
+            </span>
+            <span>Claude session</span>
+          </div>
+
           <div class="auth-listening-pill">
+            <span class="auth-listening-mark">
+              <LoreMark size="xs" />
+            </span>
+            <span>Listening for teachings</span>
             <span class="auth-listening-bars">
               <span />
               <span />
               <span />
             </span>
-            Listening for teachings
           </div>
 
           <div class="auth-capture-window">
-            <div class="flex items-center justify-between border-b border-white/8 px-4 py-2.5">
-              <div class="flex items-center gap-1.5">
-                <span class="size-2 rounded-full bg-lore-danger/80" />
-                <span class="size-2 rounded-full bg-lore-warning/80" />
-                <span class="size-2 rounded-full bg-lore-success/80" />
+            <div class="auth-window-header">
+              <div class="auth-window-heading">
+                <div class="flex items-center gap-1.5">
+                  <span class="auth-window-dot" />
+                  <span class="auth-window-dot" />
+                  <span class="auth-window-dot" />
+                </div>
+                <span class="auth-window-title">
+                  LIVE LEARNING
+                </span>
               </div>
-              <span class="text-[0.625rem] font-medium tracking-wide text-white/35">
-                LIVE LEARNING
+              <span class="auth-sync-state">
+                <span class="auth-live-dot" />
+                Synced
               </span>
-              <span class="size-1.5 rounded-full bg-lore-success auth-live-dot" />
             </div>
 
-            <div class="p-3">
-              <div class="rounded-lg border border-white/8 bg-white/5 p-2.5">
-                <div class="flex items-center gap-2 text-[0.6875rem] text-white/45">
-                  <span class="inline-flex size-5 items-center justify-center rounded-md bg-white/8 font-semibold text-white/70">
+            <div class="auth-window-body">
+              <div class="auth-teaching-card">
+                <div class="auth-teaching-source">
+                  <span class="auth-source-mark">
                     <img
                       :src="'/img/codex.svg'"
                       alt=""
@@ -79,24 +113,30 @@ withDefaults(
                   </span>
                   Codex · acme/web
                 </div>
-                <p class="mt-2 text-xs leading-5 text-white/85">
+                <p class="auth-teaching-copy">
                   “Keep authentication checks at route boundaries.”
                 </p>
-              </div>
 
-              <div class="my-2.5 flex items-center gap-2">
-                <span class="auth-flow-line" />
-                <span class="rounded-full flex items-center gap-1 border border-lore-accent/25 bg-lore-accent/10 px-2 py-1 text-[0.625rem] font-semibold text-lore-accent">
-                  <span>Remembered by</span>
-                  <span class="text-lore-accent flex items-center gap-0.5">
+                <div class="auth-memory-receipt">
+                  <span class="auth-memory-identity">
                     <LoreMark size="xs" />
-                    <span class="text-xs">Lore</span>
+                    Remembered by Lore
                   </span>
-                </span>
-                <span class="auth-flow-line auth-flow-line-reverse" />
+                  <span class="auth-memory-context">
+                    Workspace convention
+                  </span>
+                  <span class="auth-memory-agents">
+                    <span class="auth-memory-dot" />
+                    3 agents ready
+                  </span>
+                </div>
               </div>
 
-              <div class="grid grid-cols-3 gap-2">
+              <p class="auth-agent-eyebrow">
+                Available in context
+              </p>
+
+              <div class="auth-agent-tray">
                 <div class="auth-agent-card">
                   <span class="auth-agent-mark">
                     <img
@@ -107,8 +147,31 @@ withDefaults(
                       class="size-4 object-contain"
                     />
                   </span>
-                  <span>Claude</span>
-                  <span class="auth-agent-state">Ready</span>
+                  <span class="auth-agent-copy">
+                    <span>Claude</span>
+                    <span class="auth-agent-state">
+                      <span class="auth-agent-dot" />
+                      Ready
+                    </span>
+                  </span>
+                </div>
+                <div class="auth-agent-card">
+                  <span class="auth-agent-mark">
+                    <img
+                      :src="'/img/codex.svg'"
+                      alt=""
+                      width="18"
+                      height="18"
+                      class="size-4 object-contain"
+                    />
+                  </span>
+                  <span class="auth-agent-copy">
+                    <span>Codex</span>
+                    <span class="auth-agent-state">
+                      <span class="auth-agent-dot" />
+                      Ready
+                    </span>
+                  </span>
                 </div>
                 <div class="auth-agent-card">
                   <span class="auth-agent-mark">
@@ -120,29 +183,26 @@ withDefaults(
                       class="size-4 object-contain"
                     />
                   </span>
-                  <span>Devin</span>
-                  <span class="auth-agent-state">Ready</span>
-                </div>
-                <div class="auth-agent-card">
-                  <span class="auth-agent-mark">
-                    <img
-                      :src="'/img/github.svg'"
-                      alt=""
-                      width="18"
-                      height="18"
-                      class="size-4 object-contain brightness-0 invert"
-                    />
+                  <span class="auth-agent-copy">
+                    <span>Devin</span>
+                    <span class="auth-agent-state">
+                      <span class="auth-agent-dot" />
+                      Ready
+                    </span>
                   </span>
-                  <span>GitHub</span>
-                  <span class="auth-agent-state">Ready</span>
                 </div>
               </div>
-            </div>
-          </div>
 
-          <div class="auth-scope-chip">
-            <span class="size-1.5 rounded-full bg-lore-accent" />
-            Scoped to acme/web
+              <div class="auth-window-footer">
+                <span class="auth-window-scope">
+                  <span class="auth-scope-dot" />
+                  Scoped to acme/web
+                </span>
+                <span class="auth-window-footer-note">
+                  Shared workspace knowledge
+                </span>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -186,74 +246,150 @@ withDefaults(
 .auth-showcase {
   isolation: isolate;
   background:
-    radial-gradient(circle at 18% 24%, rgb(147 197 253 / 22%), transparent 34%),
-    radial-gradient(circle at 86% 78%, rgb(192 132 252 / 16%), transparent 32%),
-    radial-gradient(circle at 78% 12%, rgb(217 181 104 / 10%), transparent 24%),
-    linear-gradient(145deg, #111318 0%, #17171b 48%, #0b0b0d 100%);
+    radial-gradient(circle at 17% 21%, rgb(102 136 255 / 36%), transparent 36%),
+    radial-gradient(circle at 94% 63%, rgb(193 120 255 / 22%), transparent 34%),
+    linear-gradient(150deg, #151a35 0%, #0b0d18 48%, #090a0e 100%);
 }
 
 .auth-showcase::before {
   position: absolute;
   inset: 0;
   z-index: -1;
-  background-image:
-    linear-gradient(rgb(255 255 255 / 2.5%) 1px, transparent 1px),
-    linear-gradient(90deg, rgb(255 255 255 / 2.5%) 1px, transparent 1px);
-  background-size: 44px 44px;
+  background-image: radial-gradient(circle, rgb(255 255 255 / 13%) 1px, transparent 1.2px);
+  background-position: -0.25rem -0.25rem;
+  background-size: 1rem 1rem;
   content: "";
-  mask-image: linear-gradient(to bottom, transparent, black 20%, black 82%, transparent);
+  mask-image:
+    radial-gradient(ellipse at 14% 27%, black, transparent 46%),
+    radial-gradient(ellipse at 87% 74%, black, transparent 42%);
+}
+
+.auth-showcase::after {
+  position: absolute;
+  top: 49%;
+  left: -18%;
+  z-index: -1;
+  width: 138%;
+  height: 13rem;
+  border: 1px solid rgb(255 255 255 / 7%);
+  border-radius: 50%;
+  content: "";
+  rotate: -13deg;
+  box-shadow:
+    0 1.5rem 0 -1px rgb(255 255 255 / 3%),
+    0 3rem 0 -1px rgb(144 163 255 / 4%);
 }
 
 .auth-showcase-orb {
   position: absolute;
-  border: 1px solid rgb(255 255 255 / 8%);
-  border-radius: 42% 58% 64% 36% / 42% 38% 62% 58%;
-  background: rgb(255 255 255 / 3%);
-  filter: blur(0.2px);
+  border: 1px solid rgb(255 255 255 / 7%);
+  border-radius: 999px;
+  background: transparent;
 }
 
 .auth-showcase-orb-left {
-  top: 17%;
-  left: -7rem;
-  width: 18rem;
-  height: 22rem;
-  rotate: -18deg;
+  top: 16%;
+  left: -8rem;
+  width: 25rem;
+  height: 18rem;
+  rotate: -12deg;
+  box-shadow:
+    0 1.2rem 0 -1px rgb(255 255 255 / 5%),
+    0 2.4rem 0 -1px rgb(255 255 255 / 3%);
 }
 
 .auth-showcase-orb-right {
-  right: -8rem;
-  bottom: 5%;
-  width: 20rem;
-  height: 17rem;
-  rotate: 24deg;
+  right: -12rem;
+  bottom: 4%;
+  width: 28rem;
+  height: 19rem;
+  rotate: 18deg;
+  box-shadow:
+    0 -1.2rem 0 -1px rgb(255 255 255 / 5%),
+    0 -2.4rem 0 -1px rgb(255 255 255 / 3%);
 }
 
 .auth-product-scene {
   position: relative;
-  padding-top: 1rem;
+  isolation: isolate;
+  padding-top: 2rem;
+}
+
+.auth-session-sheet {
+  position: absolute;
+  top: 0.55rem;
+  z-index: -1;
+  display: flex;
+  height: 6.5rem;
+  align-items: flex-start;
+  gap: 0.4rem;
+  border: 1px solid rgb(255 255 255 / 13%);
+  border-radius: 1.1rem;
+  padding: 0.75rem 0.9rem;
+  box-shadow: 0 14px 28px rgb(0 0 0 / 14%);
+  color: rgb(255 255 255 / 76%);
+  font-size: 0.625rem;
+  font-weight: 600;
+  transform-origin: center;
+}
+
+.auth-session-sheet-codex {
+  right: 6%;
+  left: 5%;
+  background: linear-gradient(135deg, #a6b5ef, #6476dc 62%, #4554b8);
+  rotate: -3.5deg;
+}
+
+.auth-session-sheet-claude {
+  right: 4%;
+  left: 8%;
+  background: linear-gradient(135deg, #dccaf2, #9d79c7 60%, #6d4c94);
+  rotate: 3.5deg;
+}
+
+.auth-session-logo {
+  display: inline-flex;
+  width: 1.25rem;
+  height: 1.25rem;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgb(255 255 255 / 48%);
+  border-radius: 0.4rem;
+  background: rgb(255 255 255 / 72%);
 }
 
 .auth-listening-pill {
   position: absolute;
-  top: 0;
+  top: 1.8rem;
   left: 50%;
-  z-index: 2;
+  z-index: 3;
   display: flex;
-  min-height: 2rem;
+  min-height: 2.1rem;
   translate: -50% -50%;
   align-items: center;
   gap: 0.5rem;
-  border: 1px solid rgb(255 255 255 / 10%);
+  border: 1px solid rgb(255 255 255 / 12%);
   border-radius: 999px;
-  background: rgb(5 6 8 / 82%);
-  padding: 0.4rem 0.75rem;
-  box-shadow: 0 8px 24px rgb(0 0 0 / 24%);
-  color: rgb(255 255 255 / 62%);
+  background: rgb(15 17 24 / 97%);
+  padding: 0.35rem 0.65rem 0.35rem 0.4rem;
+  box-shadow: 0 10px 24px rgb(0 0 0 / 24%);
+  color: rgb(255 255 255 / 82%);
   font-size: 0.625rem;
   font-weight: 600;
-  letter-spacing: 0.025em;
   white-space: nowrap;
   backdrop-filter: blur(10px);
+}
+
+.auth-listening-mark {
+  display: inline-flex;
+  width: 1.45rem;
+  height: 1.45rem;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgb(255 255 255 / 9%);
+  border-radius: 0.5rem;
+  background: rgb(255 255 255 / 7%);
+  color: #b9c9ff;
 }
 
 .auth-listening-bars {
@@ -266,7 +402,7 @@ withDefaults(
 .auth-listening-bars span {
   width: 2px;
   border-radius: 999px;
-  background: var(--lore-accent);
+  background: linear-gradient(to bottom, #8fa9ff, #c788ef);
   animation: auth-listen 1.1s ease-in-out infinite;
 }
 
@@ -285,41 +421,184 @@ withDefaults(
 }
 
 .auth-capture-window {
+  position: relative;
+  z-index: 2;
   overflow: hidden;
-  border: 1px solid rgb(255 255 255 / 11%);
-  border-radius: 0.625rem;
-  background: rgb(5 6 8 / 74%);
+  border: 1px solid rgb(255 255 255 / 76%);
+  border-radius: 1.15rem;
+  background: linear-gradient(145deg, rgb(255 255 255 / 96%), rgb(239 239 236 / 94%));
   box-shadow:
-    0 16px 40px rgb(0 0 0 / 28%),
-    inset 0 1px rgb(255 255 255 / 4%);
+    0 24px 48px rgb(0 0 0 / 25%),
+    inset 0 1px rgb(255 255 255 / 70%);
   backdrop-filter: blur(14px);
   animation: auth-float 7s ease-in-out infinite;
 }
 
-.auth-flow-line {
-  height: 1px;
-  min-width: 1rem;
-  flex: 1;
-  background: linear-gradient(90deg, transparent, rgb(147 197 253 / 55%));
+.auth-window-header {
+  display: flex;
+  min-height: 2.5rem;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid rgb(24 24 27 / 9%);
+  padding: 0.6rem 0.85rem;
 }
 
-.auth-flow-line-reverse {
-  rotate: 180deg;
+.auth-window-heading {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.auth-window-dot {
+  width: 0.4rem;
+  height: 0.4rem;
+  border-radius: 999px;
+  background: rgb(24 24 27 / 17%);
+}
+
+.auth-window-title {
+  color: rgb(39 39 42 / 48%);
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+}
+
+.auth-sync-state {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  border-radius: 999px;
+  background: rgb(24 24 27 / 5%);
+  padding: 0.22rem 0.45rem;
+  color: rgb(39 39 42 / 50%);
+  font-size: 0.5rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.auth-window-body {
+  padding: 0.75rem;
+}
+
+.auth-teaching-card {
+  overflow: hidden;
+  border: 1px solid rgb(24 24 27 / 9%);
+  border-radius: 0.7rem;
+  background: rgb(255 255 255 / 62%);
+  padding: 0.7rem 0.7rem 0;
+}
+
+.auth-teaching-source {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: rgb(39 39 42 / 50%);
+  font-size: 0.6875rem;
+  font-weight: 600;
+}
+
+.auth-source-mark {
+  display: inline-flex;
+  width: 1.35rem;
+  height: 1.35rem;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgb(24 24 27 / 8%);
+  border-radius: 0.45rem;
+  background: rgb(24 24 27 / 4%);
+}
+
+.auth-teaching-copy {
+  margin-top: 0.5rem;
+  color: rgb(24 24 27 / 90%);
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.25rem;
+}
+
+.auth-memory-receipt {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: 2.45rem;
+  margin: 0.65rem -0.7rem 0;
+  border-top: 1px solid rgb(24 24 27 / 8%);
+  background: linear-gradient(90deg, #eff2fc, #f1f0f7 54%, #edf4f0);
+  padding: 0.42rem 0.65rem;
+}
+
+.auth-memory-identity {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: rgb(24 24 27 / 78%);
+  font-size: 0.6rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.auth-memory-identity :deep(img) {
+  filter: brightness(0);
+  opacity: 0.72;
+}
+
+.auth-memory-context {
+  color: rgb(63 63 70 / 53%);
+  font-size: 0.55rem;
+  white-space: nowrap;
+}
+
+.auth-memory-agents {
+  display: inline-flex;
+  margin-left: auto;
+  align-items: center;
+  gap: 0.35rem;
+  color: #688777;
+  font-size: 0.55rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.auth-memory-dot,
+.auth-agent-dot {
+  width: 0.3rem;
+  height: 0.3rem;
+  border-radius: 999px;
+  background: #72b095;
+}
+
+.auth-agent-eyebrow {
+  margin: 0.65rem 0.1rem 0.35rem;
+  color: rgb(63 63 70 / 48%);
+  font-size: 0.5rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.auth-agent-tray {
+  display: grid;
+  overflow: hidden;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border: 1px solid rgb(24 24 27 / 8%);
+  border-radius: 0.7rem;
+  background: rgb(255 255 255 / 43%);
 }
 
 .auth-agent-card {
   display: flex;
   min-width: 0;
-  flex-direction: column;
   align-items: center;
-  gap: 0.25rem;
-  border: 1px solid rgb(255 255 255 / 7%);
-  border-radius: 0.5rem;
-  background: rgb(255 255 255 / 3.5%);
-  padding: 0.5rem 0.25rem;
-  color: rgb(255 255 255 / 68%);
+  gap: 0.45rem;
+  padding: 0.55rem 0.5rem;
+  color: rgb(39 39 42 / 72%);
   font-size: 0.625rem;
-  font-weight: 600;
+  font-weight: 700;
+}
+
+.auth-agent-card + .auth-agent-card {
+  border-left: 1px solid rgb(24 24 27 / 8%);
 }
 
 .auth-agent-mark {
@@ -328,37 +607,63 @@ withDefaults(
   height: 1.5rem;
   align-items: center;
   justify-content: center;
-  border: 1px solid rgb(255 255 255 / 8%);
+  border: 1px solid rgb(24 24 27 / 8%);
   border-radius: 0.5rem;
-  background: rgb(255 255 255 / 5%);
-  color: rgb(255 255 255 / 85%);
+  background: rgb(255 255 255 / 68%);
   font-size: 0.625rem;
+}
+
+.auth-agent-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.15rem;
 }
 
 .auth-agent-state {
-  color: var(--lore-success);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: #5e927c;
   font-size: 0.5625rem;
-  font-weight: 500;
+  font-weight: 600;
 }
 
-.auth-scope-chip {
-  position: absolute;
-  right: -0.75rem;
-  bottom: -0.55rem;
+.auth-window-footer {
   display: flex;
+  min-height: 1.85rem;
   align-items: center;
-  gap: 0.4rem;
-  border: 1px solid rgb(255 255 255 / 9%);
-  border-radius: 0.5rem;
-  background: rgb(13 14 18 / 88%);
-  padding: 0.45rem 0.65rem;
-  box-shadow: 0 8px 24px rgb(0 0 0 / 22%);
-  color: rgb(255 255 255 / 52%);
-  font-size: 0.625rem;
-  backdrop-filter: blur(10px);
+  justify-content: space-between;
+  margin-top: 0.6rem;
+  border-top: 1px solid rgb(24 24 27 / 8%);
+  padding: 0.45rem 0.1rem 0;
+  color: rgb(63 63 70 / 50%);
+  font-size: 0.5rem;
+}
+
+.auth-window-scope {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.auth-scope-dot {
+  width: 0.3rem;
+  height: 0.3rem;
+  border-radius: 999px;
+  background: #7b8edc;
+}
+
+.auth-window-footer-note {
+  color: rgb(63 63 70 / 43%);
 }
 
 .auth-live-dot {
+  width: 0.35rem;
+  height: 0.35rem;
+  border-radius: 999px;
+  background: var(--lore-success);
   box-shadow: 0 0 0 4px rgb(114 199 165 / 10%);
   animation: auth-pulse 2s ease-out infinite;
 }
@@ -394,6 +699,13 @@ withDefaults(
 
   100% {
     box-shadow: 0 0 0 7px rgb(114 199 165 / 0%);
+  }
+}
+
+@media (max-width: 74.999rem) {
+  .auth-memory-context,
+  .auth-window-footer-note {
+    display: none;
   }
 }
 
