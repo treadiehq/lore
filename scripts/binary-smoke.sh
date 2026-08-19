@@ -31,7 +31,15 @@ actual="$("$binary" --version)"
 "$binary" update --help >/dev/null
 
 tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
+mock_pid=""
+cleanup() {
+  if [ -n "$mock_pid" ]; then
+    kill "$mock_pid" 2>/dev/null || true
+    wait "$mock_pid" 2>/dev/null || true
+  fi
+  rm -rf "$tmp"
+}
+trap cleanup EXIT
 
 release="$tmp/releases/download/v$expected"
 mkdir -p "$release"
@@ -51,8 +59,47 @@ LORE_BIN_DIR="$tmp/installed" \
   exit 1
 }
 
+mock_port_file="$tmp/mock-port"
+node -e '
+  const { writeFileSync } = require("node:fs");
+  const { createServer } = require("node:http");
+  const [version, portFile] = process.argv.slice(1);
+  const server = createServer((request, response) => {
+    if (
+      request.url !== "/v1/workspace/identity" ||
+      request.headers.authorization !== "Bearer binary-smoke-token"
+    ) {
+      response.writeHead(401).end();
+      return;
+    }
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({
+      workspaceId: "00000000-0000-4000-8000-000000000001",
+      workspaceName: "Binary smoke",
+      organization: "release",
+      credentialType: "workspace_token",
+      server: { version, revision: null },
+    }));
+  });
+  server.listen(0, "127.0.0.1", () => {
+    const address = server.address();
+    if (address === null || typeof address === "string") process.exit(1);
+    writeFileSync(portFile, String(address.port));
+  });
+' "$expected" "$mock_port_file" &
+mock_pid="$!"
+for _ in $(seq 1 50); do
+  [ -s "$mock_port_file" ] && break
+  sleep 0.1
+done
+[ -s "$mock_port_file" ] || {
+  echo "The binary smoke identity server did not start." >&2
+  exit 1
+}
+mock_port="$(<"$mock_port_file")"
+
 HOME="$tmp/home" "$binary" connect \
-  --url "http://127.0.0.1:1" \
+  --url "http://127.0.0.1:$mock_port" \
   --token "binary-smoke-token" \
   --agent codex >/dev/null
 
