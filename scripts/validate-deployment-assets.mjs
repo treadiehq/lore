@@ -203,6 +203,14 @@ assert(
   "Self-host acceptance image tag is stale",
 );
 assert(
+  typeof selfHostWorkflow.jobs.containers.env?.LORE_OWNER_BOOTSTRAP_TOKEN ===
+    "string" &&
+    /^[0-9a-f]{64}$/u.test(
+      selfHostWorkflow.jobs.containers.env.LORE_OWNER_BOOTSTRAP_TOKEN,
+    ),
+  "Self-host acceptance bootstrap token must remain a quoted 256-bit hex string",
+);
+assert(
   stagingWorkflow.jobs?.verify?.environment ===
     "staging-${{ inputs.provider }}",
   "Provider staging workflow must use protected provider environments",
