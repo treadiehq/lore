@@ -1,0 +1,15 @@
+{
+  "id": "lore",
+  "name": "Lore",
+  "version": "0.1.4",
+  "description": "Portable, governed memory for coding agents.",
+  "logo": "logo.svg",
+  "links": {
+    "github": "https://github.com/treadiehq/lore"
+  },
+  "tags": [
+    "ai",
+    "memory",
+    "developer-tools"
+  ]
+}

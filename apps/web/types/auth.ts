@@ -4,6 +4,8 @@ export interface AuthSession {
   workspaceId: string;
   workspaceName: string;
   organization: string;
+  role: "owner" | "member";
+  expiresAt: string;
 }
 
 export interface AuthSessionResponse {
@@ -12,4 +14,13 @@ export interface AuthSessionResponse {
 
 export interface AuthMessageResponse {
   message: string;
+}
+
+export type AuthPublicConfig =
+  | { mode: "disabled" }
+  | { mode: "magic_link" }
+  | { mode: "local_owner"; bootstrapRequired: boolean };
+
+export interface PasswordChangeResponse {
+  changed: true;
 }

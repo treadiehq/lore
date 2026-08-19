@@ -11,7 +11,6 @@ import { $fetch } from "ofetch";
 import { useRuntimeConfig } from "#imports";
 import type { AuthSession } from "~/types/auth";
 
-const AUTH_COOKIE_MAX_AGE = 60 * 60 * 24 * 30;
 const COOKIE_NAME_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/u;
 
 type AuthApiMethod = "GET" | "POST";
@@ -20,6 +19,7 @@ interface AuthApiRequestOptions {
   method: AuthApiMethod;
   body?: unknown;
   token?: string;
+  bootstrapToken?: string;
 }
 
 function configuredCookieName(event: H3Event): string {
@@ -76,10 +76,20 @@ export function getAuthToken(event: H3Event): string | undefined {
   return token === "" ? undefined : token;
 }
 
-export function setAuthCookie(event: H3Event, token: string): void {
+export function setAuthCookie(
+  event: H3Event,
+  token: string,
+  expiresAt: string,
+): void {
+  const expires = new Date(expiresAt);
+  const maxAge = Math.max(
+    0,
+    Math.floor((expires.getTime() - Date.now()) / 1_000),
+  );
   setCookie(event, configuredCookieName(event), token, {
     ...cookieOptions(event),
-    maxAge: AUTH_COOKIE_MAX_AGE,
+    expires,
+    maxAge,
   });
 }
 
@@ -125,6 +135,9 @@ export async function requestAuthApi<T>(
   }
   if (options.token !== undefined) {
     headers.authorization = `Bearer ${options.token}`;
+  }
+  if (options.bootstrapToken !== undefined) {
+    headers["x-lore-owner-bootstrap-token"] = options.bootstrapToken;
   }
 
   return await $fetch<T>(`${getLoreApiUrl(event)}${path}`, {
@@ -176,6 +189,9 @@ export function isAuthSession(value: unknown): value is AuthSession {
     typeof session.email === "string" &&
     typeof session.workspaceId === "string" &&
     typeof session.workspaceName === "string" &&
-    typeof session.organization === "string"
+    typeof session.organization === "string" &&
+    (session.role === "owner" || session.role === "member") &&
+    typeof session.expiresAt === "string" &&
+    Number.isFinite(Date.parse(session.expiresAt))
   );
 }

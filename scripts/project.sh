@@ -152,38 +152,67 @@ ensure_environment() {
     fi
   fi
 
-  if [[ -n "${LORE_WORKSPACE_TOKEN:-}" || "$DRY_RUN" -eq 1 ]]; then
+  if [[ "$DRY_RUN" -eq 1 ]]; then
     return
   fi
 
-  local current_token
-  current_token="$(
-    awk -F= '/^LORE_WORKSPACE_TOKEN=/{sub(/^[^=]*=/, ""); print; exit}' "$ENV_FILE"
-  )"
-  if [[ -n "$current_token" && "$current_token" != "replace-with-a-long-random-workspace-token" ]]; then
-    return
+  if [[ -z "${LORE_WORKSPACE_TOKEN:-}" ]]; then
+    local current_workspace_token
+    current_workspace_token="$(
+      awk -F= '/^LORE_WORKSPACE_TOKEN=/{sub(/^[^=]*=/, ""); print; exit}' "$ENV_FILE"
+    )"
+    if [[ -z "$current_workspace_token" || "$current_workspace_token" == "replace-with-a-long-random-workspace-token" ]]; then
+      local workspace_token workspace_temporary
+      workspace_token="$(generate_token)"
+      workspace_temporary="${ENV_FILE}.tmp.$$"
+      awk -v token="$workspace_token" '
+        BEGIN { replaced = 0 }
+        /^LORE_WORKSPACE_TOKEN=/ {
+          print "LORE_WORKSPACE_TOKEN=" token
+          replaced = 1
+          next
+        }
+        { print }
+        END {
+          if (!replaced) {
+            print "LORE_WORKSPACE_TOKEN=" token
+          }
+        }
+      ' "$ENV_FILE" >"$workspace_temporary"
+      chmod 600 "$workspace_temporary"
+      mv "$workspace_temporary" "$ENV_FILE"
+      printf 'Generated a local LORE_WORKSPACE_TOKEN in .env\n'
+    fi
   fi
 
-  local token temporary
-  token="$(generate_token)"
-  temporary="${ENV_FILE}.tmp.$$"
-  awk -v token="$token" '
-    BEGIN { replaced = 0 }
-    /^LORE_WORKSPACE_TOKEN=/ {
-      print "LORE_WORKSPACE_TOKEN=" token
-      replaced = 1
-      next
-    }
-    { print }
-    END {
-      if (!replaced) {
-        print "LORE_WORKSPACE_TOKEN=" token
-      }
-    }
-  ' "$ENV_FILE" >"$temporary"
-  chmod 600 "$temporary"
-  mv "$temporary" "$ENV_FILE"
-  printf 'Generated a local LORE_WORKSPACE_TOKEN in .env\n'
+  if [[ -z "${LORE_OWNER_BOOTSTRAP_TOKEN:-}" ]]; then
+    local current_owner_token
+    current_owner_token="$(
+      awk -F= '/^LORE_OWNER_BOOTSTRAP_TOKEN=/{sub(/^[^=]*=/, ""); print; exit}' "$ENV_FILE"
+    )"
+    if [[ -z "$current_owner_token" || "$current_owner_token" == "replace-with-a-separate-256-bit-owner-bootstrap-token" ]]; then
+      local owner_token owner_temporary
+      owner_token="$(generate_token)"
+      owner_temporary="${ENV_FILE}.tmp.$$"
+      awk -v token="$owner_token" '
+        BEGIN { replaced = 0 }
+        /^LORE_OWNER_BOOTSTRAP_TOKEN=/ {
+          print "LORE_OWNER_BOOTSTRAP_TOKEN=" token
+          replaced = 1
+          next
+        }
+        { print }
+        END {
+          if (!replaced) {
+            print "LORE_OWNER_BOOTSTRAP_TOKEN=" token
+          }
+        }
+      ' "$ENV_FILE" >"$owner_temporary"
+      chmod 600 "$owner_temporary"
+      mv "$owner_temporary" "$ENV_FILE"
+      printf 'Generated a local LORE_OWNER_BOOTSTRAP_TOKEN in .env\n'
+    fi
+  fi
 }
 
 acquire_lock() {
@@ -318,9 +347,14 @@ compose_up() {
       local ui_port
       ui_port="$(env_value NUXT_PORT 3002)"
       printf 'ui_url: http://localhost:%s\n' "$ui_port"
-      printf 'signup_url: http://localhost:%s/signup\n' "$ui_port"
       printf 'login_url: http://localhost:%s/login\n' "$ui_port"
-      printf 'local_magic_links: docker compose logs -f api\n'
+      if [[ "$(env_value AUTH_MODE "")" == "local_owner" ]]; then
+        printf 'setup_url: http://localhost:%s/setup\n' "$ui_port"
+        printf 'password_reset: docker compose exec api lore-reset-password --email <owner-email>\n'
+      else
+        printf 'signup_url: http://localhost:%s/signup\n' "$ui_port"
+        printf 'local_magic_links: docker compose logs -f api\n'
+      fi
     fi
     printf 'api_url: http://localhost:%s\n' "$api_port"
     if [[ "$HEADLESS" -eq 1 ]]; then

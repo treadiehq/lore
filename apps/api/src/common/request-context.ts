@@ -8,6 +8,7 @@ export interface WorkspaceHttpRequest {
   method?: string;
   originalUrl?: string;
   url?: string;
+  ip?: string;
   requestId?: string;
   workspace?: AuthenticatedWorkspace;
 }

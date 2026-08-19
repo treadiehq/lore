@@ -18,6 +18,7 @@ const packages = [
   resolve(root, "packages/core"),
   resolve(root, "packages/sdk"),
   resolve(root, "packages/adapters/generic"),
+  resolve(root, "packages/opencode-plugin"),
   resolve(root, "packages/cli"),
 ];
 const expectedVersion = JSON.parse(
@@ -101,10 +102,21 @@ try {
       "utf8",
     ),
   );
+  const installedOpenCodePlugin = JSON.parse(
+    await readFile(
+      resolve(fixture, "node_modules/@lore-co/opencode/package.json"),
+      "utf8",
+    ),
+  );
   if (
     installedSdk.dependencies?.["@lore-co/core"] !== expectedVersion ||
     installedAdapter.dependencies?.["@lore-co/core"] !== expectedVersion ||
     installedAdapter.dependencies?.["@lore-co/sdk"] !== expectedVersion ||
+    installedOpenCodePlugin.dependencies?.["@lore-co/adapter-generic"] !==
+      expectedVersion ||
+    installedOpenCodePlugin.dependencies?.["@lore-co/core"] !==
+      expectedVersion ||
+    installedOpenCodePlugin.dependencies?.["@lore-co/sdk"] !== expectedVersion ||
     installedCli.dependencies?.["@lore-co/core"] !== expectedVersion ||
     installedCli.dependencies?.["@lore-co/sdk"] !== expectedVersion
   ) {
@@ -116,12 +128,14 @@ try {
     `import { AgentTaskSchema } from "@lore-co/core";
 import { LoreClient } from "@lore-co/sdk";
 import { GenericAgentAdapter } from "@lore-co/adapter-generic";
+import { createLoreOpenCodePlugin } from "@lore-co/opencode";
 
 const client = new LoreClient({
   baseUrl: "https://lore.invalid",
   fetch: async () => new Response("{}", { status: 200 }),
 });
 const adapter = new GenericAgentAdapter({ id: "fixture-host", client });
+const plugin = createLoreOpenCodePlugin({ adapter });
 const task = AgentTaskSchema.parse({
   agent: adapter.id,
   task: "Verify package imports",
@@ -129,6 +143,9 @@ const task = AgentTaskSchema.parse({
 });
 if (task.agent !== "fixture-host" || adapter.toTask({ task: task.task }).agent !== "fixture-host") {
   throw new Error("Published API construction failed");
+}
+if (typeof plugin !== "function") {
+  throw new Error("Published OpenCode plugin construction failed");
 }
 `,
   );
@@ -143,6 +160,19 @@ if (task.agent !== "fixture-host" || adapter.toTask({ task: task.task }).agent !
   if (cliResult.stdout.trim() !== expectedVersion) {
     throw new Error(
       `Installed Lore CLI did not execute through its package binary: ${cliResult.stdout.trim() || "<no output>"}`,
+    );
+  }
+  const selfHostHelp = await run(
+    loreExecutable,
+    ["self-host", "up", "--help"],
+    fixture,
+  );
+  if (
+    !selfHostHelp.stdout.includes("without cloning Lore") &&
+    !selfHostHelp.stdout.includes("Create secure persistent state")
+  ) {
+    throw new Error(
+      "Installed Lore CLI is missing the packaged self-host lifecycle",
     );
   }
 

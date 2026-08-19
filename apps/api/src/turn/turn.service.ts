@@ -9,6 +9,7 @@ import {
   AgentTaskSchema,
   PairedTurnRequestSchema,
   PairedTurnResponseSchema,
+  isNativeCodingAgent,
   redactUnknown,
   type AuthenticatedWorkspace,
   type PairedTurnRequest,
@@ -111,7 +112,8 @@ export class TurnService {
         organization: workspace.organization,
       };
       const learningScope = {
-        ...(sanitizedTurn.learningScope ?? sanitizedTurn.scope),
+        ...sanitizedTurn.scope,
+        ...sanitizedTurn.learningScope,
         organization: workspace.organization,
       };
       const interaction = AgentInteractionSchema.parse({
@@ -143,20 +145,17 @@ export class TurnService {
           },
         ],
       });
-      const nativeLearningWithoutRepository =
-        sanitizedTurn.connector === "lore-cli" &&
-        (sanitizedTurn.agent === "claude" ||
-          sanitizedTurn.agent === "codex") &&
-        learningScope.repo === undefined;
-      const observed = nativeLearningWithoutRepository
-        ? {
-            memories: [],
-            created: 0,
-            duplicates: 0,
-            reconciled: 0,
-            superseded: 0,
-          }
-        : await this.#engine.observe(interaction);
+      const observed =
+        isNativeCodingAgent(sanitizedTurn.agent) &&
+        learningScope.repo === undefined
+          ? {
+              memories: [],
+              created: 0,
+              duplicates: 0,
+              reconciled: 0,
+              superseded: 0,
+            }
+          : await this.#engine.observe(interaction);
       await this.#indexer.indexMemories(observed.memories);
 
       await Promise.all(

@@ -1,6 +1,7 @@
 import {
   AgentInteractionSchema,
   CandidateMemorySchema,
+  normalizeInteractionScope,
   redactSensitiveText,
   redactUnknown,
   type AgentInteraction,
@@ -172,6 +173,41 @@ function reconciliationKey(
   return fallback;
 }
 
+const ORGANIZATION_SCOPE_SIGNAL =
+  /\b(?:(?:organization|org|team|company)[ -]wide|across\s+(?:the\s+)?(?:entire\s+|whole\s+)?(?:organization|org|team|company)|across\s+(?:all|every)\s+(?:repositories|repos)|(?:all|every)\s+(?:repositories|repos))\b/iu;
+
+function boundedScopeExcerpt(value: string): string {
+  return Array.from(value.trim()).slice(0, 500).join("");
+}
+
+function candidateScopeMetadata(
+  interaction: AgentInteraction,
+  rawText: string,
+  explicitCorrection: boolean,
+): Pick<CandidateMemory, "scopeIntent" | "scopeEvidence"> {
+  const organizationEvidence = ORGANIZATION_SCOPE_SIGNAL.exec(rawText)?.[0];
+  if (explicitCorrection && organizationEvidence !== undefined) {
+    return {
+      scopeIntent: "organization",
+      scopeEvidence: {
+        basis: "explicit_user_statement",
+        excerpt: boundedScopeExcerpt(organizationEvidence),
+      },
+    };
+  }
+
+  const repository = normalizeInteractionScope(interaction).repo;
+  return repository === undefined
+    ? {}
+    : {
+        scopeIntent: "repository",
+        scopeEvidence: {
+          basis: "interaction_repository",
+          excerpt: repository,
+        },
+      };
+}
+
 export class HeuristicMemoryExtractor implements MemoryExtractor {
   async extract(interactionInput: AgentInteraction): Promise<CandidateMemory[]> {
     const interaction = AgentInteractionSchema.parse(interactionInput);
@@ -218,6 +254,7 @@ export class HeuristicMemoryExtractor implements MemoryExtractor {
               }
             : {}),
           ...(key === undefined ? {} : { reconciliationKey: key }),
+          ...candidateScopeMetadata(interaction, rawText, pairedCorrection),
         }),
       );
     }
@@ -333,13 +370,17 @@ export class OpenAiCompatibleHttpProvider implements LlmProvider {
   }
 }
 
-const llmCandidateSchema = CandidateMemorySchema.pick({
-  content: true,
-  category: true,
-  confidence: true,
-  triggeringMessageId: true,
-  rawText: true,
-});
+const llmCandidateSchema = z
+  .object({
+    content: CandidateMemorySchema.shape.content,
+    category: CandidateMemorySchema.shape.category,
+    confidence: CandidateMemorySchema.shape.confidence,
+    triggeringMessageId: CandidateMemorySchema.shape.triggeringMessageId,
+    rawText: CandidateMemorySchema.shape.rawText,
+    scopeIntent: CandidateMemorySchema.shape.scopeIntent,
+    scopeEvidence: CandidateMemorySchema.shape.scopeEvidence,
+  })
+  .strict();
 
 const extractionResultSchema = z
   .object({
@@ -417,6 +458,12 @@ function localizeLlmCandidate(
         }
       : {}),
     ...(key === undefined ? {} : { reconciliationKey: key }),
+    ...(candidate.scopeIntent === undefined
+      ? {}
+      : { scopeIntent: candidate.scopeIntent }),
+    ...(candidate.scopeEvidence === undefined
+      ? {}
+      : { scopeEvidence: candidate.scopeEvidence }),
   });
 }
 
@@ -482,7 +529,7 @@ export class LlmMemoryExtractor implements MemoryExtractor {
       {
         schemaName: "memory_candidates",
         systemPrompt:
-          "Extract only durable, explicit human engineering teachings, corrections, deprecations, conventions, gotchas, architecture decisions, or stable behavior facts. Ignore questions, transient task details, assistant statements, speculation, and ordinary conversation. Return JSON only. Preserve the triggering user message id and exact raw text. Write each memory as a concise standalone statement. Never return supersedesMemoryId or reconciliation metadata; those fields are resolved locally.",
+          "Extract only durable, explicit human engineering teachings, corrections, deprecations, conventions, gotchas, architecture decisions, or stable behavior facts. Ignore questions, transient task details, assistant statements, speculation, and ordinary conversation. Return JSON only. Preserve the triggering user message id and exact raw text. Write each memory as a concise standalone statement. Scope intent is bounded to organization, repository, or uncertain. Use organization only for an explicit correction whose user text clearly says it applies team-, company-, or organization-wide or across all repositories, and include a verbatim scopeEvidence excerpt no longer than 500 characters with basis explicit_user_statement. Otherwise use repository when repository context is present or uncertain when it is not. Never return supersedesMemoryId or reconciliation metadata; those fields are resolved locally.",
         prompt: JSON.stringify({
           output: {
             memories: [
@@ -493,6 +540,12 @@ export class LlmMemoryExtractor implements MemoryExtractor {
                 confidence: "number from 0 to 1",
                 triggeringMessageId: "source message id when present",
                 rawText: "exact triggering message text",
+                scopeIntent: "organization|repository|uncertain",
+                scopeEvidence: {
+                  basis:
+                    "explicit_user_statement|interaction_repository|extractor_inference",
+                  excerpt: "bounded evidence, at most 500 characters",
+                },
               },
             ],
           },

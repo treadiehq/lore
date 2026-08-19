@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref } from "vue";
 
+definePageMeta({ middleware: "guest" });
+
 useHead({
   title: "Create a workspace",
   meta: [
@@ -10,6 +12,10 @@ useHead({
 });
 
 const auth = useAuth();
+const authConfig = await auth.getAuthConfig({ force: true });
+if (authConfig.mode !== "magic_link") {
+  await navigateTo("/login", { replace: true });
+}
 const organizationName = ref("");
 const email = ref("");
 const pending = ref(false);

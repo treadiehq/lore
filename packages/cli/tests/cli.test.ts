@@ -1,17 +1,24 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
+import { createServer } from "node:http";
 import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  LORE_OPENCODE_PLUGIN,
+  countLoreOpenCodePlugins,
   countLoreHooks,
   getLorePaths,
   mergeLoreHooks,
+  mergeLoreOpenCodePlugin,
+  removeLoreOpenCodePlugin,
   removeLoreHooks,
 } from "../src/cli.js";
 
 const homes: string[] = [];
+const execute = promisify(execFile);
 
 afterEach(async () => {
   await Promise.all(
@@ -119,21 +126,57 @@ describe("native hook configuration", () => {
       "cli.js",
     );
     const environment = { ...process.env, HOME: home };
+    const server = createServer((request, response) => {
+      response.setHeader("content-type", "application/json");
+      response.end(
+        JSON.stringify(
+          request.url === "/v1/workspace/identity"
+            ? {
+                workspaceId: "22222222-2222-4222-8222-222222222222",
+                workspaceName: "Test",
+                organization: "test",
+                credentialType: "workspace_token",
+                server: { version: "0.1.4", revision: null },
+              }
+            : { status: "ok", check: "readiness" },
+        ),
+      );
+    });
+    await new Promise<void>((resolveListen, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolveListen);
+    });
+    const address = server.address();
+    if (address === null || typeof address === "string") {
+      throw new Error("Expected a local test server");
+    }
 
-    execFileSync(
-      process.execPath,
-      [
-        cli,
-        "connect",
-        "--url",
-        "http://127.0.0.1:3004",
-        "--token",
-        "test-token",
-        "--agent",
-        "claude",
-      ],
-      { env: environment, encoding: "utf8" },
-    );
+    try {
+      await execute(
+        process.execPath,
+        [
+          cli,
+          "connect",
+          "--url",
+          `http://127.0.0.1:${address.port}`,
+          "--token",
+          "test-token",
+          "--agent",
+          "claude",
+        ],
+        { env: environment, encoding: "utf8" },
+      );
+    } finally {
+      await new Promise<void>((resolveClose, reject) => {
+        server.close((error) => {
+          if (error === undefined) {
+            resolveClose();
+          } else {
+            reject(error);
+          }
+        });
+      });
+    }
 
     const installed = getLorePaths(home);
     await expect(access(installed.runtimeRepository)).resolves.toBeUndefined();
@@ -152,5 +195,47 @@ describe("native hook configuration", () => {
         },
       ),
     ).not.toThrow();
+  });
+});
+
+describe("OpenCode plugin configuration", () => {
+  it("preserves unrelated keys and plugins while reconnecting idempotently", () => {
+    const original = {
+      $schema: "https://opencode.ai/config.json",
+      theme: "system",
+      plugin: ["opencode-example-plugin", { local: "./plugin.ts" }],
+    };
+
+    const once = mergeLoreOpenCodePlugin(original);
+    const twice = mergeLoreOpenCodePlugin(once);
+
+    expect(twice).toEqual(once);
+    expect(once).toEqual({
+      ...original,
+      plugin: [...original.plugin, LORE_OPENCODE_PLUGIN],
+    });
+    expect(countLoreOpenCodePlugins(twice)).toBe(1);
+    expect(original.plugin).toHaveLength(2);
+  });
+
+  it("replaces stale Lore entries and disconnects only Lore", () => {
+    const original = {
+      keybinds: { leader: "ctrl+x" },
+      plugin: ["keep-me", "@lore-co/opencode-plugin@0.1.2"],
+    };
+
+    const connected = mergeLoreOpenCodePlugin(original);
+
+    expect(connected.plugin).toEqual(["keep-me", LORE_OPENCODE_PLUGIN]);
+    expect(removeLoreOpenCodePlugin(connected)).toEqual({
+      keybinds: original.keybinds,
+      plugin: ["keep-me"],
+    });
+  });
+
+  it("refuses a malformed plugin field", () => {
+    expect(() =>
+      mergeLoreOpenCodePlugin({ plugin: "@lore-co/opencode-plugin" }),
+    ).toThrow("must be a JSON array");
   });
 });

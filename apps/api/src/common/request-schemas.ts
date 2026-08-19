@@ -6,6 +6,7 @@ import {
   MemoryScopeSchema,
   MemorySourceSchema,
   MemoryStatusSchema,
+  ProposalReviewDecisionSchema,
   type CorrectMemoryDto,
   type CreateMemoryDto,
   type ListMemoriesDto,
@@ -117,6 +118,38 @@ export const CorrectMemoryBodySchema = z
     source: MemorySourceSchema.optional(),
   })
   .strict();
+
+export const ReviewProposalBodySchema = z
+  .object({
+    decision: ProposalReviewDecisionSchema,
+    reason: z.string().trim().min(1).max(2_000),
+    targetMemoryId: z.uuid().optional(),
+    scope: MemoryScopeSchema.optional(),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    if (input.decision === "use_proposal" && input.targetMemoryId === undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["targetMemoryId"],
+        message: "Using a proposal requires a deterministic conflict target",
+      });
+    }
+    if (input.decision !== "use_proposal" && input.targetMemoryId !== undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["targetMemoryId"],
+        message: "Only use_proposal decisions accept a target",
+      });
+    }
+    if (input.decision === "reject" && input.scope !== undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["scope"],
+        message: "Rejected proposals cannot change scope",
+      });
+    }
+  });
 
 function splitCommaSeparated(value: unknown): unknown {
   if (typeof value !== "string" || !value.includes(",")) {

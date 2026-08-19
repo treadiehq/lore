@@ -4,6 +4,7 @@ import {
   AuthSignupRequestSchema,
   AuthTokenSchema,
   CreateWorkspaceTokenRequestSchema,
+  WorkspaceIdentityResponseSchema,
   WorkspaceTokenSecretSchema,
 } from "@lore-co/core";
 import type {
@@ -69,11 +70,46 @@ describe("passwordless auth contracts", () => {
       }),
     ).toThrow();
   });
+
+  it("accepts only the safe strict workspace identity contract", () => {
+    const identity = {
+      workspaceId: "22222222-2222-4222-8222-222222222222",
+      workspaceName: "Acme Engineering",
+      organization: "acme",
+      credentialType: "session" as const,
+      role: "owner" as const,
+      server: {
+        version: "0.1.4",
+        revision: "0123456789abcdef",
+      },
+    };
+
+    expect(WorkspaceIdentityResponseSchema.parse(identity)).toEqual(identity);
+    expect(() =>
+      WorkspaceIdentityResponseSchema.parse({
+        ...identity,
+        token: "must-not-be-returned",
+      }),
+    ).toThrow();
+    expect(() =>
+      WorkspaceIdentityResponseSchema.parse({
+        ...identity,
+        server: { ...identity.server, unexpected: true },
+      }),
+    ).toThrow();
+  });
 });
 
 describe("deployment auth configuration", () => {
+  const productionBase = {
+    NODE_ENV: "production",
+    DATABASE_URL: "postgresql://lore:password@localhost:5432/lore",
+    LORE_WORKSPACE_TOKEN: "workspace-token-12345678901234567890",
+    LORE_WORKSPACE_ORGANIZATION: "example",
+  } as const;
+
   it("disables browser authentication by default", () => {
-    expect(apiDeploymentConfig({})).toEqual({
+    expect(apiDeploymentConfig({})).toMatchObject({
       auth: { mode: "disabled" },
       corsOrigins: [],
     });
@@ -82,8 +118,10 @@ describe("deployment auth configuration", () => {
   it("rejects local magic-link logging in production", () => {
     expect(() =>
       apiDeploymentConfig({
-        NODE_ENV: "production",
+        ...productionBase,
         AUTH_EMAIL_MODE: "local",
+        AUTH_WEB_ORIGIN: "https://lore.example.com",
+        NUXT_ORIGIN: "https://lore.example.com",
       }),
     ).toThrow("AUTH_EMAIL_MODE=local is not allowed in production");
   });
@@ -91,7 +129,7 @@ describe("deployment auth configuration", () => {
   it("requires matching HTTPS dashboard origins", () => {
     expect(() =>
       apiDeploymentConfig({
-        NODE_ENV: "production",
+        ...productionBase,
         AUTH_EMAIL_MODE: "resend",
         AUTH_WEB_ORIGIN: "https://lore.example.com",
         NUXT_ORIGIN: "https://other.example.com",
@@ -104,19 +142,19 @@ describe("deployment auth configuration", () => {
   it("requires an explicit dashboard CORS origin in Resend mode", () => {
     expect(() =>
       apiDeploymentConfig({
-        NODE_ENV: "production",
+        ...productionBase,
         AUTH_EMAIL_MODE: "resend",
         AUTH_WEB_ORIGIN: "https://lore.example.com",
         AUTH_EMAIL_FROM: "Lore <auth@example.com>",
         RESEND_API_KEY: "resend-test-key",
       }),
-    ).toThrow("NUXT_ORIGIN is required when AUTH_EMAIL_MODE=resend");
+    ).toThrow("NUXT_ORIGIN is required when AUTH_MODE=magic_link");
   });
 
   it("accepts an aligned production dashboard origin", () => {
     expect(
       apiDeploymentConfig({
-        NODE_ENV: "production",
+        ...productionBase,
         AUTH_EMAIL_MODE: "resend",
         AUTH_WEB_ORIGIN: "https://lore.example.com",
         NUXT_ORIGIN: "https://lore.example.com",
@@ -125,8 +163,9 @@ describe("deployment auth configuration", () => {
       }),
     ).toMatchObject({
       auth: {
-        mode: "resend",
+        mode: "magic_link",
         webOrigin: "https://lore.example.com",
+        delivery: { mode: "resend" },
       },
       corsOrigins: ["https://lore.example.com"],
     });

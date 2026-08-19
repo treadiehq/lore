@@ -8,8 +8,14 @@ import {
   ForgetMemoryDtoSchema,
   GetMemoryDtoSchema,
   ListMemoriesDtoSchema,
+  MemoryConflictSchema,
   MemorySchema,
   normalizeInteractionScope,
+  ProposalMetadataSchema,
+  RecordProposalConflictDtoSchema,
+  ReviewProposalDtoSchema,
+  UpdateWorkspaceLearningPolicySchema,
+  WorkspaceLearningPolicySchema,
   type AgentInteraction,
   type AgentTask,
   type CandidateMemory,
@@ -25,24 +31,35 @@ import {
   type ListMemoriesResponse,
   type Memory,
   type MemoryCategory,
+  type MemoryConflict,
   type MemoryScope,
   type MemorySource,
   type ObserveResponse,
+  type ProposalRecord,
+  type RecordProposalConflictDto,
   type RememberResponse,
+  type ReviewProposalDto,
+  type ReviewProposalResponse,
+  type UpdateWorkspaceLearningPolicy,
+  type WorkspaceLearningPolicy,
 } from "./schemas.js";
 import type { ConfirmationLevel } from "./pilot-schemas.js";
-import { redactSensitiveText } from "./redaction.js";
+import { redactSensitiveText, redactUnknown } from "./redaction.js";
 import type {
+  MemoryConflictDetector,
   MemoryExtractor,
   MemoryRepository,
   MemoryRetriever,
   RepositoryContext,
+  WorkspaceRepositoryContext,
 } from "./ports.js";
+import { ScopedMemoryConflictDetector } from "./conflict-detector.js";
 
 export interface SharedMemoryEngineDependencies {
   repository: MemoryRepository;
   extractor: MemoryExtractor;
   retriever: MemoryRetriever;
+  conflictDetector?: MemoryConflictDetector;
   minimumConfidence?: number;
 }
 
@@ -90,6 +107,56 @@ function tokenOverlap(left: readonly string[], right: readonly string[]): number
   return left.filter((token) => rightSet.has(token)).length / left.length;
 }
 
+const ORGANIZATION_SCOPE_SIGNAL =
+  /\b(?:(?:organization|org|team|company)[ -]wide|across\s+(?:the\s+)?(?:entire\s+|whole\s+)?(?:organization|org|team|company)|across\s+(?:all|every)\s+(?:repositories|repos)|(?:all|every)\s+(?:repositories|repos))\b/iu;
+
+function isExplicitOrganizationCandidate(
+  candidate: CandidateMemory,
+): boolean {
+  if (
+    candidate.category !== "correction" ||
+    candidate.confirmation !== "explicit" ||
+    candidate.scopeIntent !== "organization" ||
+    candidate.scopeEvidence?.basis !== "explicit_user_statement"
+  ) {
+    return false;
+  }
+  const rawText = candidate.rawText;
+  if (rawText === undefined) {
+    return false;
+  }
+  const evidence = candidate.scopeEvidence.excerpt;
+  return (
+    normalizedComparison(rawText).includes(normalizedComparison(evidence)) &&
+    ORGANIZATION_SCOPE_SIGNAL.test(evidence)
+  );
+}
+
+function resolveCandidateScope(
+  taskScope: MemoryScope,
+  candidate: CandidateMemory,
+  reconciliationTarget?: Memory,
+): MemoryScope | undefined {
+  if (reconciliationTarget !== undefined) {
+    return reconciliationTarget.scope;
+  }
+  if (
+    isExplicitOrganizationCandidate(candidate) &&
+    taskScope.organization !== undefined
+  ) {
+    return { organization: taskScope.organization };
+  }
+  if (taskScope.repo === undefined) {
+    return undefined;
+  }
+  return {
+    ...(taskScope.organization === undefined
+      ? {}
+      : { organization: taskScope.organization }),
+    repo: taskScope.repo,
+  };
+}
+
 export function createMemoryFingerprint(input: {
   content: string;
   scope: MemoryScope;
@@ -119,6 +186,7 @@ function createMemory(input: {
   confirmation?: ConfirmationLevel;
   reconciliationKey?: string;
   supersedesMemoryId?: string | null;
+  status?: "active" | "proposed";
   timestamp?: string;
 }): Memory {
   const timestamp = input.timestamp ?? new Date().toISOString();
@@ -131,7 +199,7 @@ function createMemory(input: {
     content: normalizedContent(input.content),
     scope: input.scope,
     category: input.category,
-    status: "active",
+    status: input.status ?? "active",
     source: input.source,
     ...(input.confidence === undefined ? {} : { confidence: input.confidence }),
     ...(input.confirmation === undefined
@@ -241,6 +309,7 @@ export class SharedMemoryEngine {
   readonly #repository: MemoryRepository;
   readonly #extractor: MemoryExtractor;
   readonly #retriever: MemoryRetriever;
+  readonly #conflictDetector: MemoryConflictDetector;
   readonly #minimumConfidence: number;
 
   constructor(dependencies: SharedMemoryEngineDependencies);
@@ -264,6 +333,9 @@ export class SharedMemoryEngine {
       this.#repository = dependenciesOrRepository.repository;
       this.#extractor = dependenciesOrRepository.extractor;
       this.#retriever = dependenciesOrRepository.retriever;
+      this.#conflictDetector =
+        dependenciesOrRepository.conflictDetector ??
+        new ScopedMemoryConflictDetector(dependenciesOrRepository.retriever);
       this.#minimumConfidence = Math.min(
         Math.max(dependenciesOrRepository.minimumConfidence ?? 0.8, 0),
         1,
@@ -279,6 +351,7 @@ export class SharedMemoryEngine {
     this.#repository = dependenciesOrRepository;
     this.#extractor = extractor;
     this.#retriever = retriever;
+    this.#conflictDetector = new ScopedMemoryConflictDetector(retriever);
     this.#minimumConfidence = 0.8;
   }
 
@@ -294,6 +367,13 @@ export class SharedMemoryEngine {
         "Observed learnings require an organization, project, repository, path, or component scope",
       );
     }
+    const workspacePolicy =
+      interaction.workspaceId === undefined
+        ? undefined
+        : await this.#repository.getWorkspaceLearningPolicy(
+            interaction.workspaceId,
+          );
+    const learningMode = workspacePolicy?.learningMode ?? "trust_tiered";
     const candidates = (await this.#extractor.extract(interaction))
       .map((candidate) => {
         const content = redactSensitiveText(candidate.content);
@@ -305,6 +385,10 @@ export class SharedMemoryEngine {
           candidate.supersedesContent === undefined
             ? undefined
             : redactSensitiveText(candidate.supersedesContent);
+        const scopeEvidence =
+          candidate.scopeEvidence === undefined
+            ? undefined
+            : redactSensitiveText(candidate.scopeEvidence.excerpt);
         return CandidateMemorySchema.parse({
           ...candidate,
           content: content.text,
@@ -312,6 +396,14 @@ export class SharedMemoryEngine {
           ...(supersedesContent === undefined
             ? {}
             : { supersedesContent: supersedesContent.text }),
+          ...(scopeEvidence === undefined
+            ? {}
+            : {
+                scopeEvidence: {
+                  ...candidate.scopeEvidence,
+                  excerpt: scopeEvidence.text,
+                },
+              }),
         });
       })
       .filter((candidate) => candidate.confidence >= this.#minimumConfidence);
@@ -360,9 +452,44 @@ export class SharedMemoryEngine {
         ...(sourceWasRedacted ? { redacted: true } : {}),
       } satisfies MemorySource;
 
+      const explicitTarget =
+        candidate.supersedesMemoryId === undefined
+          ? undefined
+          : await this.#repository.get(
+              candidate.supersedesMemoryId,
+              interaction.workspaceId === undefined
+                ? undefined
+                : { workspaceId: interaction.workspaceId },
+            );
+      if (
+        candidate.supersedesMemoryId !== undefined &&
+        explicitTarget === null
+      ) {
+        throw new Error(
+          `Correction target not found: ${candidate.supersedesMemoryId}`,
+        );
+      }
+      const inferredTarget =
+        explicitTarget === undefined
+          ? await findReconciliationTarget(
+              this.#repository,
+              scope,
+              candidate,
+              interaction.workspaceId,
+            )
+          : undefined;
+      const reconciliationTarget = explicitTarget ?? inferredTarget;
+      const candidateScope = resolveCandidateScope(
+        scope,
+        candidate,
+        reconciliationTarget ?? undefined,
+      );
+      if (candidateScope === undefined) {
+        continue;
+      }
       const equivalent = await findEquivalentMemory(
         this.#repository,
-        scope,
+        candidateScope,
         candidate,
         interaction.workspaceId,
       );
@@ -371,23 +498,19 @@ export class SharedMemoryEngine {
         continue;
       }
 
-      const inferredTarget =
-        candidate.supersedesMemoryId === undefined
-          ? await findReconciliationTarget(
-              this.#repository,
-              scope,
-              candidate,
-              interaction.workspaceId,
-            )
-          : undefined;
-      const supersedesMemoryId =
-        candidate.supersedesMemoryId ?? inferredTarget?.id;
+      const supersedesMemoryId = reconciliationTarget?.id;
+      const shouldPropose =
+        interaction.workspaceId !== undefined &&
+        (learningMode === "proposal_only" ||
+          supersedesMemoryId !== undefined ||
+          candidate.category !== "correction" ||
+          candidate.confirmation !== "explicit");
       const memory = createMemory({
         ...(interaction.workspaceId === undefined
           ? {}
           : { workspaceId: interaction.workspaceId }),
         content: candidate.content,
-        scope,
+        scope: candidateScope,
         category: candidate.category,
         source,
         confidence: candidate.confidence,
@@ -396,8 +519,72 @@ export class SharedMemoryEngine {
           ? {}
           : { reconciliationKey: candidate.reconciliationKey }),
         ...(supersedesMemoryId === undefined ? {} : { supersedesMemoryId }),
+        ...(shouldPropose ? { status: "proposed" as const } : {}),
       });
-      if (supersedesMemoryId === undefined) {
+      if (shouldPropose) {
+        const proposalWorkspaceId = interaction.workspaceId;
+        if (proposalWorkspaceId === undefined) {
+          throw new Error("Governed proposals require a workspace ID");
+        }
+        const metadata = ProposalMetadataSchema.parse({
+          memoryId: memory.id,
+          workspaceId: proposalWorkspaceId,
+          policyMode: learningMode,
+          reason:
+            learningMode === "proposal_only"
+              ? "Workspace policy requires review for automatic captures."
+              : supersedesMemoryId === undefined
+                ? "Automatic capture was not an explicit human correction."
+                : "A deterministic replacement target requires conflict review.",
+          provenance: source,
+          proposedAt: memory.createdAt,
+          decision: null,
+          reviewerId: null,
+          decisionReason: null,
+          decidedAt: null,
+          decisionTargetMemoryId: null,
+        });
+        if (workspacePolicy === undefined) {
+          throw new Error("Governed proposals require workspace policy");
+        }
+        const detected = await this.#conflictDetector.detect(
+          {
+            proposal: memory,
+            ...(reconciliationTarget === undefined
+              ? {}
+              : { deterministicTarget: reconciliationTarget }),
+            policy: workspacePolicy,
+          },
+          { workspaceId: proposalWorkspaceId },
+        );
+        const conflicts: MemoryConflict[] = detected.map((conflict) => {
+          const evidence = redactUnknown(conflict.evidence);
+          return MemoryConflictSchema.parse({
+            id: randomUUID(),
+            workspaceId: proposalWorkspaceId,
+            proposalMemoryId: memory.id,
+            targetMemoryId: conflict.targetMemoryId,
+            detector: conflict.detector,
+            severity:
+              conflict.detector === "deterministic"
+                ? "blocking"
+                : "warning",
+            evidence: evidence.value,
+            createdAt: memory.createdAt,
+            resolution: null,
+            resolvedAt: null,
+          });
+        });
+        const result = await this.#repository.propose(
+          memory,
+          metadata,
+          conflicts,
+        );
+        stored.push(result.memory);
+        if (result.inserted) {
+          created += 1;
+        }
+      } else if (supersedesMemoryId === undefined) {
         const result = await this.#repository.insert(memory);
         stored.push(result.memory);
         if (result.inserted) {
@@ -436,11 +623,78 @@ export class SharedMemoryEngine {
     context?: { workspaceId?: string },
   ): Promise<GetContextResponse> {
     const task = AgentTaskSchema.parse(taskInput);
-    const hits = await this.#retriever.retrieve(task, context);
+    const hits = (await this.#retriever.retrieve(task, context)).filter(
+      (hit) => hit.memory.status === "active",
+    );
     return {
       memories: hits.map((hit) => hit.memory),
       hits,
     };
+  }
+
+  async getWorkspaceLearningPolicy(
+    workspaceIdInput: string,
+  ): Promise<WorkspaceLearningPolicy> {
+    const workspaceId =
+      WorkspaceLearningPolicySchema.shape.workspaceId.parse(workspaceIdInput);
+    return this.#repository.getWorkspaceLearningPolicy(workspaceId);
+  }
+
+  async updateWorkspaceLearningPolicy(
+    workspaceIdInput: string,
+    updateInput: UpdateWorkspaceLearningPolicy,
+  ): Promise<WorkspaceLearningPolicy> {
+    const workspaceId =
+      WorkspaceLearningPolicySchema.shape.workspaceId.parse(workspaceIdInput);
+    const update = UpdateWorkspaceLearningPolicySchema.parse(updateInput);
+    return this.#repository.updateWorkspaceLearningPolicy(workspaceId, update);
+  }
+
+  async getProposal(
+    proposalMemoryId: string,
+    context: WorkspaceRepositoryContext,
+  ): Promise<ProposalRecord | null> {
+    const memoryId = ReviewProposalDtoSchema.shape.proposalMemoryId.parse(
+      proposalMemoryId,
+    );
+    return this.#repository.getProposal(memoryId, context);
+  }
+
+  async recordProposalConflict(
+    inputValue: RecordProposalConflictDto,
+    context: WorkspaceRepositoryContext,
+  ): Promise<MemoryConflict> {
+    const input = RecordProposalConflictDtoSchema.parse(inputValue);
+    const redactedEvidence = redactUnknown(input.evidence);
+    const conflict = MemoryConflictSchema.parse({
+      id: randomUUID(),
+      workspaceId: context.workspaceId,
+      proposalMemoryId: input.proposalMemoryId,
+      targetMemoryId: input.targetMemoryId,
+      detector: input.detector,
+      severity: input.severity,
+      evidence: redactedEvidence.value,
+      createdAt: new Date().toISOString(),
+      resolution: null,
+      resolvedAt: null,
+    });
+    return (
+      await this.#repository.addProposalConflict(conflict, context)
+    ).conflict;
+  }
+
+  async reviewProposal(
+    inputValue: ReviewProposalDto,
+    context: WorkspaceRepositoryContext,
+  ): Promise<ReviewProposalResponse> {
+    const input = ReviewProposalDtoSchema.parse(inputValue);
+    return this.#repository.reviewProposal(
+      {
+        ...input,
+        reason: redactSensitiveText(input.reason).text,
+      },
+      context,
+    );
   }
 
   async remember(input: CreateMemoryDto): Promise<RememberResponse> {

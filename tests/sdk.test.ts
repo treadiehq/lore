@@ -50,6 +50,34 @@ function response(value: unknown, status = 200): Response {
 }
 
 describe("SharedMemoryClient requests", () => {
+  it("gets and strictly validates authenticated workspace identity", async () => {
+    let request: { url: string; method?: string } | undefined;
+    const identity = {
+      workspaceId: "22222222-2222-4222-8222-222222222222",
+      workspaceName: "Acme Engineering",
+      organization: "acme",
+      credentialType: "workspace_token" as const,
+      server: { version: "0.1.4", revision: null },
+    };
+    const client = new LoreClient({
+      baseUrl: "http://lore.test/",
+      headers: { authorization: "Bearer workspace-token" },
+      fetch: async (input, init) => {
+        request = {
+          url: input instanceof Request ? input.url : String(input),
+          ...(init?.method === undefined ? {} : { method: init.method }),
+        };
+        return response(identity);
+      },
+    });
+
+    await expect(client.getWorkspaceIdentity()).resolves.toEqual(identity);
+    expect(request).toEqual({
+      url: "http://lore.test/v1/workspace/identity",
+      method: "GET",
+    });
+  });
+
   it("sends observation JSON and serializes list filters", async () => {
     const requests: Array<{ url: string; init?: RequestInit }> = [];
     const injectedFetch: typeof fetch = async (input, init) => {
@@ -455,6 +483,110 @@ describe("SharedMemoryClient requests", () => {
     expect(request?.headers.get("idempotency-key")).toBe(
       "incident-42:reply-3",
     );
+  });
+
+  it("gets and updates policy and reviews proposal details", async () => {
+    const requests: Array<{ url: string; method: string; body?: unknown }> = [];
+    const workspaceId = "22222222-2222-4222-8222-222222222222";
+    const proposal = {
+      ...memory,
+      status: "proposed" as const,
+    };
+    const metadata = {
+      memoryId: proposal.id,
+      workspaceId,
+      policyMode: "proposal_only" as const,
+      reason: "Review required.",
+      provenance: proposal.source,
+      proposedAt: proposal.createdAt,
+      decision: null,
+      reviewerId: null,
+      decisionReason: null,
+      decidedAt: null,
+      decisionTargetMemoryId: null,
+    };
+    const client = new LoreClient({
+      baseUrl: "http://lore.test",
+      fetch: async (input, init) => {
+        const url = input instanceof Request ? input.url : String(input);
+        const method = init?.method ?? "GET";
+        requests.push({
+          url,
+          method,
+          ...(init?.body === undefined
+            ? {}
+            : { body: JSON.parse(String(init.body)) as unknown }),
+        });
+        if (url.endsWith("/v1/workspace/policy")) {
+          return response({
+            workspaceId,
+            learningMode: method === "PATCH" ? "proposal_only" : "trust_tiered",
+            llmConflictAnalysisEnabled: method === "PATCH",
+            updatedAt: "2026-08-18T12:00:00.000Z",
+          });
+        }
+        if (url.endsWith("/proposal")) {
+          return response({
+            memory: proposal,
+            metadata,
+            conflicts: [],
+            conflictTargets: [],
+          });
+        }
+        return response({
+          proposal: { ...proposal, status: "active" },
+          metadata: {
+            ...metadata,
+            decision: "approve",
+            reviewerId: "33333333-3333-4333-8333-333333333333",
+            decisionReason: "Durable convention.",
+            decidedAt: "2026-08-18T12:01:00.000Z",
+          },
+          conflicts: [],
+          supersededMemory: null,
+        });
+      },
+    });
+
+    await client.getWorkspaceLearningPolicy();
+    await client.updateWorkspaceLearningPolicy({
+      learningMode: "proposal_only",
+      llmConflictAnalysisEnabled: true,
+    });
+    await client.getProposal(proposal.id);
+    await client.reviewProposal(proposal.id, {
+      decision: "approve",
+      reason: "Durable convention.",
+      scope: { organization: "acme" },
+    });
+
+    expect(requests).toEqual([
+      {
+        url: "http://lore.test/v1/workspace/policy",
+        method: "GET",
+      },
+      {
+        url: "http://lore.test/v1/workspace/policy",
+        method: "PATCH",
+        body: {
+          learningMode: "proposal_only",
+          llmConflictAnalysisEnabled: true,
+        },
+      },
+      {
+        url: `http://lore.test/v1/memories/${proposal.id}/proposal`,
+        method: "GET",
+      },
+      {
+        url: `http://lore.test/v1/memories/${proposal.id}/review`,
+        method: "POST",
+        body: {
+          decision: "approve",
+          reason: "Durable convention.",
+          scope: { organization: "acme" },
+        },
+      },
+    ]);
   });
 
   it("throws a structured API error with server details", async () => {

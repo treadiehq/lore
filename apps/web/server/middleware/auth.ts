@@ -8,7 +8,13 @@ import {
 } from "h3";
 import { getAuthToken } from "~/server/utils/auth";
 
-const PUBLIC_PAGES = new Set(["/auth/verify", "/login", "/signup"]);
+const PUBLIC_PAGES = new Set([
+  "/auth/reset",
+  "/auth/verify",
+  "/login",
+  "/setup",
+  "/signup",
+]);
 
 function isPublicPath(pathname: string): boolean {
   return (

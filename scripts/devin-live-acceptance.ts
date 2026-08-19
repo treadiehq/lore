@@ -124,16 +124,19 @@ async function runCustomerCli(
   }
 }
 
-function assertWorkspaceScoped(learning: Learning): void {
+function assertRepositoryScoped(
+  learning: Learning,
+  repository: string,
+): void {
   if (
     learning.scope.organization === undefined ||
     learning.scope.project !== undefined ||
-    learning.scope.repo !== undefined ||
+    learning.scope.repo !== repository ||
     learning.scope.path !== undefined ||
     learning.scope.component !== undefined
   ) {
     throw new Error(
-      `Captured Devin learning ${learning.id} was not stored at workspace scope`,
+      `Captured Devin learning ${learning.id} was not stored at repository scope for ${repository}`,
     );
   }
 }
@@ -311,7 +314,7 @@ async function main(): Promise<void> {
         "Lore's Devin poller did not capture the user correction before timeout",
       );
     }
-    assertWorkspaceScoped(capturedLearning);
+    assertRepositoryScoped(capturedLearning, repository);
     createdLearningIds.push(capturedLearning.id);
 
     process.stdout.write(

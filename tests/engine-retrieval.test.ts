@@ -156,7 +156,7 @@ describe("SharedMemoryEngine persistence semantics", () => {
 });
 
 describe("ScopedKeywordMemoryRetriever", () => {
-  it("shares workspace-scoped learning across repositories", async () => {
+  it("shares strongly relevant organization-only learning across repositories", async () => {
     const { engine } = createEngineHarness();
     const remembered = await engine.remember({
       content: "All account writes must use AccountStore.",
@@ -176,6 +176,27 @@ describe("ScopedKeywordMemoryRetriever", () => {
       remembered.memory.id,
     );
   });
+
+  it.each(["claude", "codex", "opencode"])(
+    "requires strong relevance for organization-only %s retrieval",
+    async (agent) => {
+      const { engine } = createEngineHarness();
+      await engine.remember({
+        content: "AccountStore is preferred.",
+        scope: { organization: "acme" },
+        source,
+      });
+
+      await expect(
+        engine.getContext({
+          agent,
+          organization: "acme",
+          repo: "billing",
+          task: "Update an account endpoint",
+        }),
+      ).resolves.toMatchObject({ memories: [] });
+    },
+  );
 
   it("enforces scope and active status while ranking task, diff, and symbol evidence", async () => {
     const { engine, repository } = createEngineHarness();

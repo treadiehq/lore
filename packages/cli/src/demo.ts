@@ -75,7 +75,7 @@ async function installIsolatedClaudeHooks(directory: string): Promise<void> {
 export interface DemoConnectorConfig {
   apiUrl: string;
   token: string;
-  agents: readonly ("claude" | "codex")[];
+  agents: readonly ("claude" | "codex" | "opencode")[];
 }
 
 export interface DemoResult {

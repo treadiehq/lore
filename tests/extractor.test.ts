@@ -61,6 +61,11 @@ describe("HeuristicMemoryExtractor", () => {
         triggeringMessageId: "stripe-teaching",
         rawText:
           "Never call Stripe directly from API handlers. Use BillingService.",
+        scopeIntent: "repository",
+        scopeEvidence: {
+          basis: "interaction_repository",
+          excerpt: "payments",
+        },
       },
     ]);
   });
@@ -109,6 +114,35 @@ describe("HeuristicMemoryExtractor", () => {
       category: "behavior",
       triggeringMessageId: "behavior",
     });
+  });
+
+  it("emits bounded organization intent only for an explicit wide correction", async () => {
+    const rawText =
+      "No, this is organization-wide across all repositories: always use AccountStore.";
+    const memories = await extractor.extract({
+      agent: "claude",
+      organization: "acme",
+      repo: "accounts",
+      messages: [
+        {
+          role: "assistant",
+          content: "Only the accounts repository uses AccountStore.",
+        },
+        { role: "user", content: rawText },
+      ],
+    });
+
+    expect(memories).toHaveLength(1);
+    expect(memories[0]).toMatchObject({
+      category: "correction",
+      confirmation: "explicit",
+      scopeIntent: "organization",
+      scopeEvidence: {
+        basis: "explicit_user_statement",
+        excerpt: expect.stringMatching(/organization-wide/iu),
+      },
+    });
+    expect(memories[0]?.scopeEvidence?.excerpt.length).toBeLessThanOrEqual(500);
   });
 
   it("ignores ordinary conversation, task-only requests, and agent claims", async () => {

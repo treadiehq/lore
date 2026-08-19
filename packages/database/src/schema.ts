@@ -1,11 +1,18 @@
 import type {
   AuthUserStatus,
+  AuthUserRole,
   ConfirmationLevel,
   ConnectorEventType,
   DeliveryFeedbackAction,
   DeliveryReceipt,
   MemoryCategory,
+  MemoryConflictDetectorKind,
+  MemoryConflictEvidence,
+  MemoryConflictSeverity,
+  MemorySource,
   MemoryStatus,
+  ProposalReviewDecision,
+  WorkspaceLearningMode,
   WorkspaceStatus,
 } from "@lore-co/core";
 import { sql } from "drizzle-orm";
@@ -32,6 +39,13 @@ export const workspaces = pgTable(
     organization: text("organization").notNull(),
     name: text("name").notNull(),
     status: text("status").$type<WorkspaceStatus>().notNull().default("active"),
+    learningMode: text("learning_mode")
+      .$type<WorkspaceLearningMode>()
+      .notNull()
+      .default("trust_tiered"),
+    llmConflictAnalysisEnabled: boolean("llm_conflict_analysis_enabled")
+      .notNull()
+      .default(false),
     createdAt: timestamp("created_at", {
       withTimezone: true,
       mode: "date",
@@ -51,6 +65,10 @@ export const workspaces = pgTable(
     check(
       "workspaces_status_check",
       sql`${table.status} IN ('active', 'disabled')`,
+    ),
+    check(
+      "workspaces_learning_mode_check",
+      sql`${table.learningMode} IN ('trust_tiered', 'proposal_only')`,
     ),
   ],
 );
@@ -103,6 +121,8 @@ export const authUsers = pgTable(
       .references(() => workspaces.id, { onDelete: "cascade" }),
     email: text("email").notNull(),
     status: text("status").$type<AuthUserStatus>().notNull().default("active"),
+    role: text("role").$type<AuthUserRole>().notNull().default("member"),
+    passwordHash: text("password_hash"),
     createdAt: timestamp("created_at", {
       withTimezone: true,
       mode: "date",
@@ -126,6 +146,82 @@ export const authUsers = pgTable(
     check(
       "auth_users_status_check",
       sql`${table.status} IN ('active', 'disabled')`,
+    ),
+    check("auth_users_role_check", sql`${table.role} IN ('owner', 'member')`),
+    check(
+      "auth_users_password_hash_check",
+      sql`${table.passwordHash} IS NULL OR ${table.passwordHash} LIKE '$argon2id$%'`,
+    ),
+  ],
+);
+
+export const authOwnerBootstraps = pgTable(
+  "auth_owner_bootstraps",
+  {
+    workspaceId: uuid("workspace_id")
+      .primaryKey()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    claimedByUserId: uuid("claimed_by_user_id")
+      .notNull()
+      .references(() => authUsers.id, { onDelete: "restrict" }),
+    claimedAt: timestamp("claimed_at", {
+      withTimezone: true,
+      mode: "date",
+    })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("auth_owner_bootstraps_user_idx").on(table.claimedByUserId),
+  ],
+);
+
+export const authPasswordResets = pgTable(
+  "auth_password_resets",
+  {
+    id: uuid("id").primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => authUsers.id, { onDelete: "cascade" }),
+    tokenHash: text("token_hash").notNull(),
+    expiresAt: timestamp("expires_at", {
+      withTimezone: true,
+      mode: "date",
+    }).notNull(),
+    consumedAt: timestamp("consumed_at", {
+      withTimezone: true,
+      mode: "date",
+    }),
+    revokedAt: timestamp("revoked_at", {
+      withTimezone: true,
+      mode: "date",
+    }),
+    createdAt: timestamp("created_at", {
+      withTimezone: true,
+      mode: "date",
+    })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("auth_password_resets_hash_idx").on(table.tokenHash),
+    uniqueIndex("auth_password_resets_user_active_idx")
+      .on(table.userId)
+      .where(
+        sql`${table.consumedAt} IS NULL AND ${table.revokedAt} IS NULL`,
+      ),
+    index("auth_password_resets_expires_idx").on(table.expiresAt),
+    check(
+      "auth_password_resets_hash_check",
+      sql`${table.tokenHash} ~ '^[a-f0-9]{64}$'`,
+    ),
+    check(
+      "auth_password_resets_expires_check",
+      sql`${table.expiresAt} > ${table.createdAt}`,
+    ),
+    check(
+      "auth_password_resets_terminal_state_check",
+      sql`${table.consumedAt} IS NULL OR ${table.revokedAt} IS NULL`,
     ),
   ],
 );
@@ -291,7 +387,7 @@ export const memories = pgTable(
     ),
     check(
       "memories_status_check",
-      sql`${table.status} IN ('active', 'suppressed', 'superseded', 'deleted')`,
+      sql`${table.status} IN ('active', 'proposed', 'suppressed', 'superseded', 'deleted')`,
     ),
     check(
       "memories_suppressed_at_check",
@@ -315,7 +411,7 @@ export const memories = pgTable(
     ),
     uniqueIndex("memories_fingerprint_idx")
       .on(table.workspaceId, table.fingerprint)
-      .where(sql`${table.status} IN ('active', 'suppressed')`),
+      .where(sql`${table.status} IN ('active', 'proposed', 'suppressed')`),
     uniqueIndex("memories_supersedes_unique_idx")
       .on(table.supersedesMemoryId)
       .where(sql`${table.supersedesMemoryId} IS NOT NULL`),
@@ -343,6 +439,141 @@ export const memories = pgTable(
       .where(
         sql`${table.status} = 'active' AND ${table.embedding} IS NOT NULL`,
       ),
+  ],
+);
+
+export const memoryProposals = pgTable(
+  "memory_proposals",
+  {
+    memoryId: uuid("memory_id")
+      .primaryKey()
+      .references(() => memories.id, { onDelete: "cascade" }),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    policyMode: text("policy_mode").$type<WorkspaceLearningMode>().notNull(),
+    reason: text("reason").notNull(),
+    provenance: jsonb("provenance").$type<MemorySource>().notNull(),
+    proposedAt: timestamp("proposed_at", {
+      withTimezone: true,
+      mode: "date",
+    })
+      .notNull()
+      .defaultNow(),
+    decision: text("decision").$type<ProposalReviewDecision>(),
+    reviewerId: text("reviewer_id"),
+    decisionReason: text("decision_reason"),
+    decidedAt: timestamp("decided_at", {
+      withTimezone: true,
+      mode: "date",
+    }),
+    decisionTargetMemoryId: uuid("decision_target_memory_id").references(
+      () => memories.id,
+      { onDelete: "restrict" },
+    ),
+  },
+  (table) => [
+    index("memory_proposals_workspace_idx").on(
+      table.workspaceId,
+      table.proposedAt,
+    ),
+    index("memory_proposals_decision_target_idx").on(
+      table.decisionTargetMemoryId,
+    ),
+    check(
+      "memory_proposals_policy_mode_check",
+      sql`${table.policyMode} IN ('trust_tiered', 'proposal_only')`,
+    ),
+    check(
+      "memory_proposals_decision_check",
+      sql`${table.decision} IS NULL OR ${table.decision} IN ('approve', 'use_proposal', 'keep_both', 'reject')`,
+    ),
+    check(
+      "memory_proposals_decision_metadata_check",
+      sql`(
+        ${table.decision} IS NULL
+        AND ${table.reviewerId} IS NULL
+        AND ${table.decisionReason} IS NULL
+        AND ${table.decidedAt} IS NULL
+        AND ${table.decisionTargetMemoryId} IS NULL
+      ) OR (
+        ${table.decision} IS NOT NULL
+        AND ${table.reviewerId} IS NOT NULL
+        AND ${table.decisionReason} IS NOT NULL
+        AND ${table.decidedAt} IS NOT NULL
+        AND (
+          (${table.decision} = 'use_proposal' AND ${table.decisionTargetMemoryId} IS NOT NULL)
+          OR (${table.decision} <> 'use_proposal' AND ${table.decisionTargetMemoryId} IS NULL)
+        )
+      )`,
+    ),
+  ],
+);
+
+export const memoryConflicts = pgTable(
+  "memory_conflicts",
+  {
+    id: uuid("id").primaryKey(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    proposalMemoryId: uuid("proposal_memory_id")
+      .notNull()
+      .references(() => memories.id, { onDelete: "cascade" }),
+    targetMemoryId: uuid("target_memory_id")
+      .notNull()
+      .references(() => memories.id, { onDelete: "cascade" }),
+    detector: text("detector").$type<MemoryConflictDetectorKind>().notNull(),
+    severity: text("severity").$type<MemoryConflictSeverity>().notNull(),
+    evidence: jsonb("evidence").$type<MemoryConflictEvidence>().notNull(),
+    createdAt: timestamp("created_at", {
+      withTimezone: true,
+      mode: "date",
+    })
+      .notNull()
+      .defaultNow(),
+    resolution: text("resolution").$type<ProposalReviewDecision>(),
+    resolvedAt: timestamp("resolved_at", {
+      withTimezone: true,
+      mode: "date",
+    }),
+  },
+  (table) => [
+    uniqueIndex("memory_conflicts_edge_idx").on(
+      table.workspaceId,
+      table.proposalMemoryId,
+      table.targetMemoryId,
+      table.detector,
+    ),
+    index("memory_conflicts_proposal_idx").on(
+      table.proposalMemoryId,
+      table.createdAt,
+    ),
+    index("memory_conflicts_target_idx").on(table.targetMemoryId),
+    index("memory_conflicts_workspace_idx").on(
+      table.workspaceId,
+      table.createdAt,
+    ),
+    check(
+      "memory_conflicts_detector_check",
+      sql`${table.detector} IN ('deterministic', 'lexical', 'semantic', 'llm')`,
+    ),
+    check(
+      "memory_conflicts_severity_check",
+      sql`${table.severity} IN ('blocking', 'warning')`,
+    ),
+    check(
+      "memory_conflicts_resolution_check",
+      sql`${table.resolution} IS NULL OR ${table.resolution} IN ('approve', 'use_proposal', 'keep_both', 'reject')`,
+    ),
+    check(
+      "memory_conflicts_resolution_metadata_check",
+      sql`(${table.resolution} IS NULL AND ${table.resolvedAt} IS NULL) OR (${table.resolution} IS NOT NULL AND ${table.resolvedAt} IS NOT NULL)`,
+    ),
+    check(
+      "memory_conflicts_not_self_check",
+      sql`${table.proposalMemoryId} <> ${table.targetMemoryId}`,
+    ),
   ],
 );
 
@@ -635,12 +866,20 @@ export type WorkspaceTokenRow = typeof workspaceTokens.$inferSelect;
 export type NewWorkspaceTokenRow = typeof workspaceTokens.$inferInsert;
 export type AuthUserRow = typeof authUsers.$inferSelect;
 export type NewAuthUserRow = typeof authUsers.$inferInsert;
+export type AuthOwnerBootstrapRow = typeof authOwnerBootstraps.$inferSelect;
+export type NewAuthOwnerBootstrapRow = typeof authOwnerBootstraps.$inferInsert;
+export type AuthPasswordResetRow = typeof authPasswordResets.$inferSelect;
+export type NewAuthPasswordResetRow = typeof authPasswordResets.$inferInsert;
 export type AuthMagicLinkRow = typeof authMagicLinks.$inferSelect;
 export type NewAuthMagicLinkRow = typeof authMagicLinks.$inferInsert;
 export type AuthSessionRow = typeof authSessions.$inferSelect;
 export type NewAuthSessionRow = typeof authSessions.$inferInsert;
 export type MemoryRow = typeof memories.$inferSelect;
 export type NewMemoryRow = typeof memories.$inferInsert;
+export type MemoryProposalRow = typeof memoryProposals.$inferSelect;
+export type NewMemoryProposalRow = typeof memoryProposals.$inferInsert;
+export type MemoryConflictRow = typeof memoryConflicts.$inferSelect;
+export type NewMemoryConflictRow = typeof memoryConflicts.$inferInsert;
 export type ConnectorEventRow = typeof connectorEvents.$inferSelect;
 export type NewConnectorEventRow = typeof connectorEvents.$inferInsert;
 export type MemoryProvenanceRow = typeof memoryProvenance.$inferSelect;

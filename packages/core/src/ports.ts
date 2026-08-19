@@ -2,14 +2,24 @@ import type {
   AgentInteraction,
   AgentTask,
   CandidateMemory,
+  DetectedMemoryConflict,
   InsertMemoryResult,
   ListMemoriesDto,
   ListMemoriesResponse,
   Memory,
+  MemoryConflictAnalysis,
+  MemoryConflict,
   MemoryScope,
   MemoryUpdate,
   ObserveResponse,
+  ProposalMetadata,
+  ProposalRecord,
+  ProposeMemoryResult,
+  ReviewProposalDto,
+  ReviewProposalResponse,
   RetrievalHit,
+  UpdateWorkspaceLearningPolicy,
+  WorkspaceLearningPolicy,
 } from "./schemas.js";
 
 export interface FindActiveCandidatesOptions {
@@ -30,9 +40,62 @@ export interface RepositoryContext {
   workspaceId?: string;
 }
 
+export interface WorkspaceRepositoryContext {
+  workspaceId: string;
+}
+
+export interface MemoryConflictDetectionInput {
+  proposal: Memory;
+  deterministicTarget?: Memory;
+  policy: WorkspaceLearningPolicy;
+}
+
+export interface MemoryConflictDetector {
+  detect(
+    input: MemoryConflictDetectionInput,
+    context: WorkspaceRepositoryContext,
+  ): Promise<readonly DetectedMemoryConflict[]>;
+}
+
+export interface MemoryConflictAnalyzer {
+  analyze(input: {
+    proposal: Memory;
+    target: Memory;
+  }): Promise<MemoryConflictAnalysis>;
+}
+
+export interface InsertMemoryConflictResult {
+  conflict: MemoryConflict;
+  inserted: boolean;
+}
+
 export interface MemoryRepository {
   insert(memory: Memory): Promise<InsertMemoryResult>;
+  propose(
+    memory: Memory,
+    metadata: ProposalMetadata,
+    conflicts?: readonly MemoryConflict[],
+  ): Promise<ProposeMemoryResult>;
   get(id: string, context?: RepositoryContext): Promise<Memory | null>;
+  getProposal(
+    memoryId: string,
+    context?: RepositoryContext,
+  ): Promise<ProposalRecord | null>;
+  addProposalConflict(
+    conflict: MemoryConflict,
+    context: WorkspaceRepositoryContext,
+  ): Promise<InsertMemoryConflictResult>;
+  reviewProposal(
+    input: ReviewProposalDto,
+    context: WorkspaceRepositoryContext,
+  ): Promise<ReviewProposalResponse>;
+  getWorkspaceLearningPolicy(
+    workspaceId: string,
+  ): Promise<WorkspaceLearningPolicy>;
+  updateWorkspaceLearningPolicy(
+    workspaceId: string,
+    update: UpdateWorkspaceLearningPolicy,
+  ): Promise<WorkspaceLearningPolicy>;
   list(
     input?: ListMemoriesDto,
     context?: RepositoryContext,

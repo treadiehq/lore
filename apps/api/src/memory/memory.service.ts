@@ -2,10 +2,13 @@ import {
   ConflictException,
   Inject,
   Injectable,
+  InternalServerErrorException,
   NotFoundException,
+  UnauthorizedException,
 } from "@nestjs/common";
 import {
   MemoryUpdateSchema,
+  ProposalDetailResponseSchema,
   SharedMemoryEngine,
   redactUnknown,
   type AuthenticatedWorkspace,
@@ -19,7 +22,10 @@ import {
   type ListMemoriesResponse,
   type MemoryRepository,
   type MemoryUpdate,
+  type ProposalDetailResponse,
   type RememberResponse,
+  type ReviewProposalDto,
+  type ReviewProposalResponse,
   type UpdateMemoryResponse,
 } from "@lore-co/core";
 import type { PostgresPilotRepository } from "@lore-co/database";
@@ -228,6 +234,85 @@ export class MemoryService {
       throw new NotFoundException(`Memory not found: ${id}`);
     }
     return inspection;
+  }
+
+  async getProposal(
+    id: string,
+    workspace: AuthenticatedWorkspace,
+  ): Promise<ProposalDetailResponse> {
+    const proposal = await this.#engine.getProposal(id, {
+      workspaceId: workspace.workspaceId,
+    });
+    if (proposal === null) {
+      throw new NotFoundException("Proposal not found");
+    }
+    const targets = await Promise.all(
+      [
+        ...new Set(
+          proposal.conflicts.map((conflict) => conflict.targetMemoryId),
+        ),
+      ].map((targetId) =>
+        this.#repository.get(targetId, {
+          workspaceId: workspace.workspaceId,
+        }),
+      ),
+    );
+    return ProposalDetailResponseSchema.parse({
+      ...proposal,
+      conflictTargets: targets.filter((target) => target !== null),
+    });
+  }
+
+  async reviewProposal(
+    id: string,
+    input: Omit<ReviewProposalDto, "proposalMemoryId" | "reviewerId">,
+    workspace: AuthenticatedWorkspace,
+  ): Promise<ReviewProposalResponse> {
+    if (
+      workspace.credentialType !== "session" ||
+      workspace.userId === undefined
+    ) {
+      throw new UnauthorizedException(
+        "An authenticated user session is required",
+      );
+    }
+    try {
+      const result = await this.#engine.reviewProposal(
+        {
+          ...input,
+          proposalMemoryId: id,
+          reviewerId: workspace.userId,
+          ...(input.scope === undefined
+            ? {}
+            : {
+                scope: {
+                  ...input.scope,
+                  organization: workspace.organization,
+                },
+              }),
+        },
+        { workspaceId: workspace.workspaceId },
+      );
+      if (result.proposal.status === "active") {
+        await this.#indexer.indexMemories([result.proposal]);
+      }
+      return result;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      if (/proposal not found/iu.test(message)) {
+        throw new NotFoundException("Proposal not found");
+      }
+      if (
+        /already been resolved|blocked proposals|conflict target|fingerprint|changed during review/iu.test(
+          message,
+        )
+      ) {
+        throw new ConflictException(
+          "Proposal cannot be resolved with this decision",
+        );
+      }
+      throw new InternalServerErrorException("Proposal review failed");
+    }
   }
 
   async forget(

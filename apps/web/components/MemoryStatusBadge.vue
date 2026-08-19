@@ -8,6 +8,7 @@ const props = defineProps<{
 
 const statusClass: Record<MemoryStatus, string> = {
   active: "border-lore-success/30 bg-lore-success-soft text-lore-success",
+  proposed: "border-lore-accent/30 bg-lore-accent-soft text-lore-accent",
   suppressed: "border-lore-danger/30 bg-lore-danger-soft text-lore-danger",
   superseded: "border-lore-warning/30 bg-lore-warning-soft text-lore-warning",
   deleted: "border-lore-border bg-lore-raised text-lore-text-muted",

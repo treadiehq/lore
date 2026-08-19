@@ -34,6 +34,9 @@ stable connector, event, and session identities. `observeEvent`,
 delivered memories. `prepareTask` remains as a legacy compatibility path.
 Model and MCP policy stays with the host application.
 
+OpenCode users should use `@lore-co/opencode`; `lore connect` installs
+its plugin entry without routing OpenCode through Claude or Codex command hooks.
+
 ## Production guidance
 
 - Keep the workspace token in server-side secrets.

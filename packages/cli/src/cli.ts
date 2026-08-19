@@ -18,7 +18,11 @@ import { delimiter, dirname, resolve } from "node:path";
 import { homedir, platform } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
-  type AgentName,
+  WorkspaceIdentityResponseSchema,
+  type WorkspaceIdentityResponse,
+} from "@lore-co/core";
+import {
+  type CommandHookAgentName,
   runHook,
 } from "./runtime.js";
 import { connectGithub, runGithubCommand } from "./github.js";
@@ -26,9 +30,13 @@ import { runDevinCommand } from "./devin.js";
 import { runHostCommand } from "./host.js";
 import { runDemoCommand } from "./demo.js";
 import { updateCommand } from "./update.js";
+import { runSelfHostCommand } from "./self-host.js";
 import { IS_STANDALONE_BINARY, LORE_VERSION } from "./version.js";
 
 const LORE_OWNER_ARGUMENT = "--owner lore";
+export const LORE_OPENCODE_PLUGIN = "@lore-co/opencode";
+const CONFIGURED_AGENT_NAMES = ["claude", "codex", "opencode"] as const;
+export type ConfiguredAgentName = (typeof CONFIGURED_AGENT_NAMES)[number];
 const HOOK_EVENTS = ["UserPromptSubmit", "Stop", "SessionEnd"] as const;
 type HookEvent = (typeof HOOK_EVENTS)[number];
 
@@ -43,6 +51,7 @@ export interface LorePaths {
   queue: string;
   codexHooks: string;
   claudeSettings: string;
+  openCodeConfig: string;
 }
 
 export interface ConnectorConfig {
@@ -50,7 +59,7 @@ export interface ConnectorConfig {
   apiUrl: string;
   dashboardUrl?: string;
   token: string;
-  agents: AgentName[];
+  agents: ConfiguredAgentName[];
   connectedAt: string;
   timeoutMs: number;
 }
@@ -65,7 +74,7 @@ interface ConnectArguments {
   apiUrl?: string;
   dashboardUrl?: string;
   token?: string;
-  agents: AgentName[];
+  agents: ConfiguredAgentName[];
   timeoutMs?: number;
   json: boolean;
 }
@@ -75,12 +84,14 @@ interface OutputArguments {
 }
 
 interface AgentStatus {
-  agent: AgentName;
+  agent: ConfiguredAgentName;
   configured: boolean;
   executable: boolean;
-  hookFile: string;
-  installedHooks: number;
-  expectedHooks: number;
+  configExists: boolean;
+  configFile: string;
+  integration: "hooks" | "plugin";
+  installed: number;
+  expected: number;
 }
 
 const ROOT_HELP = `lore
@@ -90,26 +101,28 @@ Usage:
   lore <command> [options]
 
 Commands:
-  connect      Configure Lore and install native agent hooks
+  connect      Configure Lore and install native agent integrations
   github       Prepare/post GitHub reviews and observe corrections
   devin        Start and manage Lore-enabled Devin sessions
   host         Call auditable APIs from external agent hosts
-  status       Show connector and hook state
-  doctor       Diagnose configuration, hooks, and API reachability
+  status       Show connector and agent integration state
+  doctor       Diagnose configuration, integrations, and API reachability
+  self-host    Run a version-pinned local Docker Compose deployment
   demo         Prove a file-scoped Claude-to-Codex handoff
   update       Install the latest Lore CLI binary
-  disconnect   Remove Lore-owned hooks and local credentials
+  disconnect   Remove Lore-owned integrations and local credentials
   hook         Internal native hook handler
 
 Discover:
   lore connect --help
   lore status --help
   lore doctor --help
+  lore self-host --help
   lore disconnect --help
   lore host --help
 
 Examples:
-  lore connect --url https://lore.example.com --token "$LORE_TOKEN"
+  lore connect --url https://lore.example.com --token "$LORE_WORKSPACE_TOKEN"
   lore connect github --repo owner/repository
   lore status --json
   lore doctor
@@ -119,7 +132,7 @@ Examples:
 `;
 
 const CONNECT_HELP = `lore connect
-Store a workspace credential and idempotently install Codex and Claude hooks.
+Store a workspace credential and idempotently install agent integrations.
 
 Usage:
   lore connect --url <url> --token <token> [options]
@@ -127,19 +140,19 @@ Usage:
 Options:
   --url <url>           Lore API base URL (or LORE_API_URL)
   --dashboard-url <url> Lore dashboard URL used for receipt links
-  --token <token>       Workspace bearer token (or LORE_TOKEN)
-  --agent <name>        codex or claude; repeat to override auto-detection
+  --token <token>       Workspace bearer token (or LORE_WORKSPACE_TOKEN/LORE_TOKEN)
+  --agent <name>        claude, codex, or opencode; repeat to override auto-detection
   --timeout-ms <ms>     Hook request timeout, 250-10000 (default: 2500)
   --json                Print machine-readable output
   --help                Show this command's help
 
 Examples:
-  lore connect --url https://lore.example.com --token "$LORE_TOKEN"
+  lore connect --url https://lore.example.com --token "$LORE_WORKSPACE_TOKEN"
   lore connect --url http://localhost:3004 --token dev-token --agent codex
 `;
 
 const STATUS_HELP = `lore status
-Show whether Lore is configured and its native hooks are installed.
+Show whether Lore is configured and each native integration is installed.
 
 Usage:
   lore status [--json]
@@ -150,7 +163,7 @@ Examples:
 `;
 
 const DOCTOR_HELP = `lore doctor
-Check local security, runtime, native hooks, agent binaries, and Lore health.
+Check local security, runtime, agent integrations, binaries, and Lore health.
 
 Usage:
   lore doctor [--json]
@@ -161,8 +174,8 @@ Examples:
 `;
 
 const DISCONNECT_HELP = `lore disconnect
-Remove only Lore-owned native hooks, credentials, runtime, state, and retry queue.
-Unrelated Codex and Claude settings and Lore-created backups are retained.
+Remove only Lore-owned hooks/plugin, credentials, runtime, state, and retry queue.
+Unrelated agent settings, plugins, and Lore-created backups are retained.
 
 Usage:
   lore disconnect [--json]
@@ -194,6 +207,12 @@ export function getLorePaths(home?: string): LorePaths {
     queue: resolve(loreDirectory, "queue"),
     codexHooks: resolve(resolvedHome, ".codex", "hooks.json"),
     claudeSettings: resolve(resolvedHome, ".claude", "settings.json"),
+    openCodeConfig: resolve(
+      resolvedHome,
+      ".config",
+      "opencode",
+      "opencode.json",
+    ),
   };
 }
 
@@ -201,7 +220,19 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\"'\"'")}'`;
 }
 
-function hookCommand(agent: AgentName, paths: LorePaths): string {
+function isConfiguredAgent(value: unknown): value is ConfiguredAgentName {
+  return (
+    value === "claude" || value === "codex" || value === "opencode"
+  );
+}
+
+function isCommandHookAgent(
+  agent: ConfiguredAgentName,
+): agent is CommandHookAgentName {
+  return agent === "claude" || agent === "codex";
+}
+
+function hookCommand(agent: CommandHookAgentName, paths: LorePaths): string {
   if (IS_STANDALONE_BINARY) {
     return `env -u BUN_OPTIONS -u BUN_BE_BUN ${shellQuote(process.execPath)} hook --agent ${agent} ${LORE_OWNER_ARGUMENT}`;
   }
@@ -240,7 +271,7 @@ function stripLoreFromEvent(value: unknown): unknown[] {
 }
 
 function eventHandler(
-  agent: AgentName,
+  agent: CommandHookAgentName,
   event: HookEvent,
   paths: LorePaths,
 ): Record<string, unknown> {
@@ -256,7 +287,7 @@ function eventHandler(
 
 export function mergeLoreHooks(
   input: Record<string, unknown>,
-  agent: AgentName,
+  agent: CommandHookAgentName,
   paths: LorePaths,
 ): Record<string, unknown> {
   const result = cloneObject(input);
@@ -320,6 +351,56 @@ export function countLoreHooks(input: Record<string, unknown>): number {
     }
   }
   return count;
+}
+
+function isLoreOpenCodePlugin(value: unknown): boolean {
+  return (
+    typeof value === "string" &&
+    /^@lore-co\/(?:opencode|opencode-plugin)(?:@[^\s]+)?$/u.test(value)
+  );
+}
+
+export function mergeLoreOpenCodePlugin(
+  input: Record<string, unknown>,
+): Record<string, unknown> {
+  const result = cloneObject(input);
+  if (result.plugin !== undefined && !Array.isArray(result.plugin)) {
+    throw new Error(
+      'OpenCode configuration field "plugin" must be a JSON array',
+    );
+  }
+  const plugins = Array.isArray(result.plugin) ? result.plugin : [];
+  result.plugin = [
+    ...plugins.filter((plugin) => !isLoreOpenCodePlugin(plugin)),
+    LORE_OPENCODE_PLUGIN,
+  ];
+  return result;
+}
+
+export function removeLoreOpenCodePlugin(
+  input: Record<string, unknown>,
+): Record<string, unknown> {
+  const result = cloneObject(input);
+  if (!Array.isArray(result.plugin)) {
+    return result;
+  }
+  const plugins = result.plugin.filter(
+    (plugin) => !isLoreOpenCodePlugin(plugin),
+  );
+  if (plugins.length === 0) {
+    delete result.plugin;
+  } else {
+    result.plugin = plugins;
+  }
+  return result;
+}
+
+export function countLoreOpenCodePlugins(
+  input: Record<string, unknown>,
+): number {
+  return Array.isArray(input.plugin)
+    ? input.plugin.filter(isLoreOpenCodePlugin).length
+    : 0;
 }
 
 async function readJsonDocument(path: string): Promise<JsonDocument> {
@@ -407,7 +488,7 @@ function parseConnectorConfig(value: unknown): ConnectorConfig | null {
     return null;
   }
   const agents = value.agents.filter(
-    (agent): agent is AgentName => agent === "codex" || agent === "claude",
+    (agent): agent is ConfiguredAgentName => isConfiguredAgent(agent),
   );
   const timeoutMs =
     typeof value.timeoutMs === "number" &&
@@ -448,7 +529,7 @@ function normalizeApiUrl(value: string): string {
   try {
     parsed = new URL(value);
   } catch {
-    throw new Error(`Invalid Lore API URL: ${value}`);
+    throw new Error("Lore API URL is invalid");
   }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new Error("Lore API URL must use http or https");
@@ -456,9 +537,112 @@ function normalizeApiUrl(value: string): string {
   if (parsed.username !== "" || parsed.password !== "") {
     throw new Error("Lore API URL must not contain credentials");
   }
-  parsed.hash = "";
-  parsed.search = "";
+  if (parsed.hash !== "" || parsed.search !== "") {
+    throw new Error("Lore API URL must not contain a query or fragment");
+  }
   return parsed.href.replace(/\/+$/u, "");
+}
+
+function configuredToken(
+  explicit: string | undefined,
+  existing: ConnectorConfig | null,
+): string | undefined {
+  if (explicit !== undefined) {
+    return explicit;
+  }
+  const workspaceToken = process.env.LORE_WORKSPACE_TOKEN?.trim();
+  const legacyToken = process.env.LORE_TOKEN?.trim();
+  if (
+    workspaceToken !== undefined &&
+    workspaceToken !== "" &&
+    legacyToken !== undefined &&
+    legacyToken !== "" &&
+    workspaceToken !== legacyToken
+  ) {
+    throw new Error(
+      "LORE_WORKSPACE_TOKEN and LORE_TOKEN disagree. Set only one credential.",
+    );
+  }
+  return workspaceToken || legacyToken || existing?.token;
+}
+
+function semverCompatibility(version: string): {
+  major: number;
+  minor: number;
+} {
+  const match = /^(\d+)\.(\d+)\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u.exec(
+    version,
+  );
+  if (match?.[1] === undefined || match[2] === undefined) {
+    throw new Error("Invalid semantic version");
+  }
+  return { major: Number(match[1]), minor: Number(match[2]) };
+}
+
+function isCompatibleServerVersion(serverVersion: string): boolean {
+  const cli = semverCompatibility(LORE_VERSION);
+  const server = semverCompatibility(serverVersion);
+  return (
+    cli.major === server.major &&
+    (cli.major !== 0 || cli.minor === server.minor)
+  );
+}
+
+async function authenticatedIdentity(
+  apiUrl: string,
+  token: string,
+  timeoutMs: number,
+): Promise<WorkspaceIdentityResponse> {
+  const url = `${apiUrl}/v1/workspace/identity`;
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      headers: {
+        accept: "application/json",
+        authorization: `Bearer ${token}`,
+      },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      (error.name === "TimeoutError" || error.name === "AbortError")
+    ) {
+      throw new Error(
+        `Lore preflight timed out after ${timeoutMs}ms. Verify the URL and server availability.`,
+      );
+    }
+    throw new Error(
+      "Lore API is unreachable. Verify --url and the server's network availability.",
+    );
+  }
+  if (response.status === 401 || response.status === 403) {
+    throw new Error(
+      "Lore authentication failed. Verify the workspace token is active and belongs to this server.",
+    );
+  }
+  if (!response.ok) {
+    throw new Error(
+      response.status === 404
+        ? "Lore server is incompatible with this CLI. Upgrade the server before connecting."
+        : `Lore connector preflight failed with HTTP ${response.status}. Check server readiness and retry.`,
+    );
+  }
+  let body: unknown;
+  try {
+    body = JSON.parse(await response.text()) as unknown;
+  } catch {
+    throw new Error(
+      "Lore server returned an incompatible identity response. Upgrade the server and CLI.",
+    );
+  }
+  const parsed = WorkspaceIdentityResponseSchema.safeParse(body);
+  if (!parsed.success || !isCompatibleServerVersion(parsed.data.server.version)) {
+    throw new Error(
+      "Lore server is incompatible with this CLI. Upgrade the server and CLI to compatible versions.",
+    );
+  }
+  return parsed.data;
 }
 
 async function isExecutable(path: string): Promise<boolean> {
@@ -483,14 +667,28 @@ async function commandExists(command: string): Promise<boolean> {
   return false;
 }
 
-async function detectAgents(): Promise<AgentName[]> {
-  const [codex, claude] = await Promise.all([
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await access(path, fsConstants.F_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function detectAgents(paths: LorePaths): Promise<ConfiguredAgentName[]> {
+  const [codex, claude, openCodeExecutable, openCodeConfig] = await Promise.all([
     commandExists("codex"),
     commandExists("claude"),
+    commandExists("opencode"),
+    pathExists(paths.openCodeConfig),
   ]);
   return [
     ...(codex ? (["codex"] as const) : []),
     ...(claude ? (["claude"] as const) : []),
+    ...(openCodeExecutable || openCodeConfig
+      ? (["opencode"] as const)
+      : []),
   ];
 }
 
@@ -515,8 +713,45 @@ async function installRuntime(paths: LorePaths): Promise<void> {
   ]);
 }
 
-function hookPath(agent: AgentName, paths: LorePaths): string {
+function hookPath(agent: CommandHookAgentName, paths: LorePaths): string {
   return agent === "codex" ? paths.codexHooks : paths.claudeSettings;
+}
+
+function agentConfigPath(
+  agent: ConfiguredAgentName,
+  paths: LorePaths,
+): string {
+  return agent === "opencode"
+    ? paths.openCodeConfig
+    : hookPath(agent, paths);
+}
+
+function mergeAgentConfig(
+  input: Record<string, unknown>,
+  agent: ConfiguredAgentName,
+  paths: LorePaths,
+): Record<string, unknown> {
+  return agent === "opencode"
+    ? mergeLoreOpenCodePlugin(input)
+    : mergeLoreHooks(input, agent, paths);
+}
+
+function removeAgentConfig(
+  input: Record<string, unknown>,
+  agent: ConfiguredAgentName,
+): Record<string, unknown> {
+  return agent === "opencode"
+    ? removeLoreOpenCodePlugin(input)
+    : removeLoreHooks(input);
+}
+
+function countAgentIntegrations(
+  input: Record<string, unknown>,
+  agent: ConfiguredAgentName,
+): number {
+  return agent === "opencode"
+    ? countLoreOpenCodePlugins(input)
+    : countLoreHooks(input);
 }
 
 function parseInteger(value: string, flag: string): number {
@@ -574,10 +809,10 @@ function parseConnectArguments(args: readonly string[]): ConnectArguments | null
         throw new Error("--timeout-ms must be between 250 and 10000");
       }
       parsed.timeoutMs = timeoutMs;
-    } else if (value === "codex" || value === "claude") {
+    } else if (isConfiguredAgent(value)) {
       parsed.agents.push(value);
     } else {
-      throw new Error("--agent must be codex or claude");
+      throw new Error("--agent must be claude, codex, or opencode");
     }
   }
   return parsed;
@@ -613,7 +848,7 @@ async function connectCommand(args: readonly string[]): Promise<void> {
     return;
   }
   if (platform() !== "darwin" && platform() !== "linux") {
-    throw new Error("Lore hooks currently support macOS and Linux");
+    throw new Error("Lore agent integrations currently support macOS and Linux");
   }
   const paths = getLorePaths();
   const existing = await readConnectorConfig(paths);
@@ -622,8 +857,7 @@ async function connectCommand(args: readonly string[]): Promise<void> {
     process.env.LORE_API_URL ??
     process.env.LORE_BASE_URL ??
     existing?.apiUrl;
-  const token =
-    parsed.token ?? process.env.LORE_TOKEN ?? existing?.token;
+  const token = configuredToken(parsed.token, existing);
   const dashboardUrlValue =
     parsed.dashboardUrl ??
     process.env.LORE_DASHBOARD_URL ??
@@ -635,12 +869,16 @@ async function connectCommand(args: readonly string[]): Promise<void> {
   }
   if (token === undefined || token.trim() === "") {
     throw new Error(
-      "Workspace token is required. Use --token <token> or LORE_TOKEN.",
+      "Workspace token is required. Use --token <token>, LORE_WORKSPACE_TOKEN, or LORE_TOKEN.",
     );
   }
-  const detected = parsed.agents.length === 0 ? await detectAgents() : [];
+  const apiUrl = normalizeApiUrl(apiUrlValue);
+  const timeoutMs = parsed.timeoutMs ?? existing?.timeoutMs ?? 2_500;
+  const identity = await authenticatedIdentity(apiUrl, token.trim(), timeoutMs);
+  const detected =
+    parsed.agents.length === 0 ? await detectAgents(paths) : [];
   const agents = [
-    ...new Set<AgentName>([
+    ...new Set<ConfiguredAgentName>([
       ...(existing?.agents ?? []),
       ...parsed.agents,
       ...detected,
@@ -648,19 +886,27 @@ async function connectCommand(args: readonly string[]): Promise<void> {
   ].sort();
   if (agents.length === 0) {
     throw new Error(
-      "No Codex or Claude executable detected. Use --agent codex or --agent claude.",
+      "No Claude, Codex, or OpenCode installation detected. Use --agent <name>.",
     );
   }
 
   const now = new Date();
-  const documents = new Map<AgentName, JsonDocument>();
-  const mergedDocuments = new Map<AgentName, Record<string, unknown>>();
+  const documents = new Map<ConfiguredAgentName, JsonDocument>();
+  const mergedDocuments = new Map<
+    ConfiguredAgentName,
+    Record<string, unknown>
+  >();
   for (const agent of agents) {
-    const document = await readJsonDocument(hookPath(agent, paths));
+    const document = await readJsonDocument(agentConfigPath(agent, paths));
     documents.set(agent, document);
-    mergedDocuments.set(agent, mergeLoreHooks(document.value, agent, paths));
+    mergedDocuments.set(
+      agent,
+      mergeAgentConfig(document.value, agent, paths),
+    );
   }
-  await installRuntime(paths);
+  if (agents.some(isCommandHookAgent)) {
+    await installRuntime(paths);
+  }
 
   const changedHookFiles: string[] = [];
   const backups: string[] = [];
@@ -671,13 +917,13 @@ async function connectCommand(args: readonly string[]): Promise<void> {
       continue;
     }
     const result = await writeMergedJson(
-      hookPath(agent, paths),
+      agentConfigPath(agent, paths),
       document,
       merged,
       now,
     );
     if (result.changed) {
-      changedHookFiles.push(hookPath(agent, paths));
+      changedHookFiles.push(agentConfigPath(agent, paths));
     }
     if (result.backup !== undefined) {
       backups.push(result.backup);
@@ -686,19 +932,20 @@ async function connectCommand(args: readonly string[]): Promise<void> {
 
   const config: ConnectorConfig = {
     version: 1,
-    apiUrl: normalizeApiUrl(apiUrlValue),
+    apiUrl,
     ...(dashboardUrlValue === undefined
       ? {}
       : { dashboardUrl: normalizeApiUrl(dashboardUrlValue) }),
     token: token.trim(),
     agents,
     connectedAt: existing?.connectedAt ?? now.toISOString(),
-    timeoutMs: parsed.timeoutMs ?? existing?.timeoutMs ?? 2_500,
+    timeoutMs,
   };
   await atomicWrite(paths.config, `${JSON.stringify(config, null, 2)}\n`, 0o600);
   const result = {
     connected: true,
     apiUrl: config.apiUrl,
+    identity,
     agents,
     config: paths.config,
     changedHookFiles,
@@ -722,24 +969,29 @@ async function queueCount(paths: LorePaths): Promise<number> {
 }
 
 async function getAgentStatus(
-  agent: AgentName,
+  agent: ConfiguredAgentName,
   config: ConnectorConfig | null,
   paths: LorePaths,
 ): Promise<AgentStatus> {
-  const path = hookPath(agent, paths);
-  let installedHooks = 0;
+  const path = agentConfigPath(agent, paths);
+  let installed = 0;
   try {
-    installedHooks = countLoreHooks((await readJsonDocument(path)).value);
+    installed = countAgentIntegrations(
+      (await readJsonDocument(path)).value,
+      agent,
+    );
   } catch {
-    installedHooks = 0;
+    installed = 0;
   }
   return {
     agent,
     configured: config?.agents.includes(agent) ?? false,
     executable: await commandExists(agent),
-    hookFile: path,
-    installedHooks,
-    expectedHooks: HOOK_EVENTS.length,
+    configExists: await pathExists(path),
+    configFile: path,
+    integration: agent === "opencode" ? "plugin" : "hooks",
+    installed,
+    expected: agent === "opencode" ? 1 : HOOK_EVENTS.length,
   };
 }
 
@@ -748,6 +1000,7 @@ async function statusData(paths: LorePaths): Promise<{
   apiUrl: string | null;
   config: string;
   configMode: string | null;
+  runtimeRequired: boolean;
   runtimeInstalled: boolean;
   queuedTurns: number;
   agents: AgentStatus[];
@@ -759,30 +1012,39 @@ async function statusData(paths: LorePaths): Promise<{
   } catch {
     // Missing configuration is represented as disconnected.
   }
-  const runtimeChecks = IS_STANDALONE_BINARY
-    ? [access(process.execPath, fsConstants.R_OK | fsConstants.X_OK)]
-    : [
-        access(paths.runtime, fsConstants.R_OK | fsConstants.X_OK),
-        access(paths.runtimeRepository, fsConstants.R_OK),
-        access(paths.runtimePackage, fsConstants.R_OK),
-      ];
-  const [runtimeInstalled, queuedTurns, codex, claude] = await Promise.all([
-    Promise.all(runtimeChecks).then(
-      () => true,
-      () => false,
-    ),
-    queueCount(paths),
-    getAgentStatus("codex", config, paths),
-    getAgentStatus("claude", config, paths),
-  ]);
+  const runtimeRequired =
+    config?.agents.some(isCommandHookAgent) ?? false;
+  const runtimeInstalledCheck = runtimeRequired
+    ? Promise.all(
+        IS_STANDALONE_BINARY
+          ? [access(process.execPath, fsConstants.R_OK | fsConstants.X_OK)]
+          : [
+              access(paths.runtime, fsConstants.R_OK | fsConstants.X_OK),
+              access(paths.runtimeRepository, fsConstants.R_OK),
+              access(paths.runtimePackage, fsConstants.R_OK),
+            ],
+      ).then(
+        () => true,
+        () => false,
+      )
+    : Promise.resolve(false);
+  const [runtimeInstalled, queuedTurns, claude, codex, opencode] =
+    await Promise.all([
+      runtimeInstalledCheck,
+      queueCount(paths),
+      getAgentStatus("claude", config, paths),
+      getAgentStatus("codex", config, paths),
+      getAgentStatus("opencode", config, paths),
+    ]);
   return {
     connected: config !== null,
     apiUrl: config?.apiUrl ?? null,
     config: paths.config,
     configMode,
+    runtimeRequired,
     runtimeInstalled,
     queuedTurns,
-    agents: [codex, claude],
+    agents: [claude, codex, opencode],
   };
 }
 
@@ -795,13 +1057,13 @@ async function statusCommand(args: readonly string[]): Promise<void> {
   const agentLines = data.agents
     .map(
       (agent) =>
-        `${agent.agent}: ${agent.configured ? "configured" : "not configured"}, hooks ${agent.installedHooks}/${agent.expectedHooks}, executable ${agent.executable ? "yes" : "no"}`,
+        `${agent.agent}: ${agent.configured ? "configured" : "not configured"}, ${agent.integration} ${agent.installed}/${agent.expected}, executable ${agent.executable ? "yes" : "no"}, config ${agent.configExists ? "yes" : "no"}`,
     )
     .join("\n");
   writeResult(
     data,
     parsed.json,
-    `connected: ${data.connected ? "yes" : "no"}\napi_url: ${data.apiUrl ?? "-"}\nconfig_mode: ${data.configMode ?? "-"}\nruntime: ${data.runtimeInstalled ? "installed" : "missing"}\nqueued_turns: ${data.queuedTurns}\n${agentLines}\n`,
+    `connected: ${data.connected ? "yes" : "no"}\napi_url: ${data.apiUrl ?? "-"}\nconfig_mode: ${data.configMode ?? "-"}\nruntime: ${data.runtimeRequired ? (data.runtimeInstalled ? "installed" : "missing") : "not required"}\nqueued_turns: ${data.queuedTurns}\n${agentLines}\n`,
   );
 }
 
@@ -814,8 +1076,8 @@ async function disconnectCommand(args: readonly string[]): Promise<void> {
   const now = new Date();
   const changedHookFiles: string[] = [];
   const backups: string[] = [];
-  for (const agent of ["codex", "claude"] as const) {
-    const path = hookPath(agent, paths);
+  for (const agent of CONFIGURED_AGENT_NAMES) {
+    const path = agentConfigPath(agent, paths);
     const document = await readJsonDocument(path);
     if (!document.exists) {
       continue;
@@ -823,7 +1085,7 @@ async function disconnectCommand(args: readonly string[]): Promise<void> {
     const result = await writeMergedJson(
       path,
       document,
-      removeLoreHooks(document.value),
+      removeAgentConfig(document.value, agent),
       now,
     );
     if (result.changed) {
@@ -855,27 +1117,63 @@ interface DoctorCheck {
   detail: string;
 }
 
-async function apiHealth(config: ConnectorConfig): Promise<DoctorCheck> {
-  const url = `${config.apiUrl.replace(/\/+$/u, "")}/health`;
+async function apiChecks(config: ConnectorConfig): Promise<DoctorCheck[]> {
+  const readinessUrl = `${config.apiUrl}/health/ready`;
+  let readiness: Response;
   try {
-    const response = await fetch(url, {
-      headers: { authorization: `Bearer ${config.token}` },
+    readiness = await fetch(readinessUrl, {
       signal: AbortSignal.timeout(3_000),
     });
-    return response.ok
-      ? { name: "api", status: "ok", detail: `${url} returned ${response.status}` }
-      : {
-          name: "api",
-          status: "error",
-          detail: `${url} returned ${response.status}`,
-        };
-  } catch (error) {
-    return {
-      name: "api",
-      status: "error",
-      detail: error instanceof Error ? error.message : String(error),
-    };
+  } catch {
+    return [
+      {
+        name: "api-readiness",
+        status: "error",
+        detail: `unreachable: ${readinessUrl}`,
+      },
+      {
+        name: "api-identity",
+        status: "warning",
+        detail: "not checked because the API is unreachable",
+      },
+    ];
   }
+
+  const checks: DoctorCheck[] = [
+    readiness.ok
+      ? {
+          name: "api-readiness",
+          status: "ok",
+          detail: `ready: ${readinessUrl}`,
+        }
+      : {
+          name: "api-readiness",
+          status: "error",
+          detail: `unready: ${readinessUrl} returned ${readiness.status}`,
+        },
+  ];
+  try {
+    const identity = await authenticatedIdentity(
+      config.apiUrl,
+      config.token,
+      3_000,
+    );
+    checks.push({
+      name: "api-identity",
+      status: "ok",
+      detail: `authorized for ${identity.organization}/${identity.workspaceName} as ${identity.credentialType}; server ${identity.server.version}`,
+    });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : "Identity check failed";
+    checks.push({
+      name: "api-identity",
+      status: "error",
+      detail: detail.startsWith("Lore authentication failed")
+        ? "unauthorized: the configured credential was rejected"
+        : detail,
+    });
+  }
+  return checks;
 }
 
 async function doctorCommand(args: readonly string[]): Promise<void> {
@@ -917,11 +1215,13 @@ async function doctorCommand(args: readonly string[]): Promise<void> {
     status: status.configMode === "600" ? "ok" : "error",
     detail: status.configMode ?? "missing",
   });
-  checks.push({
-    name: "runtime",
-    status: status.runtimeInstalled ? "ok" : "error",
-    detail: IS_STANDALONE_BINARY ? process.execPath : paths.runtime,
-  });
+  if (status.runtimeRequired) {
+    checks.push({
+      name: "runtime",
+      status: status.runtimeInstalled ? "ok" : "error",
+      detail: IS_STANDALONE_BINARY ? process.execPath : paths.runtime,
+    });
+  }
   for (const agent of status.agents.filter((item) => item.configured)) {
     checks.push({
       name: `${agent.agent}-executable`,
@@ -929,10 +1229,10 @@ async function doctorCommand(args: readonly string[]): Promise<void> {
       detail: agent.executable ? "found on PATH" : "not found on PATH",
     });
     checks.push({
-      name: `${agent.agent}-hooks`,
+      name: `${agent.agent}-${agent.integration}`,
       status:
-        agent.installedHooks === agent.expectedHooks ? "ok" : "error",
-      detail: `${agent.installedHooks}/${agent.expectedHooks} Lore hooks in ${agent.hookFile}`,
+        agent.installed === agent.expected ? "ok" : "error",
+      detail: `${agent.installed}/${agent.expected} Lore ${agent.integration} in ${agent.configFile}`,
     });
   }
   checks.push({
@@ -941,7 +1241,7 @@ async function doctorCommand(args: readonly string[]): Promise<void> {
     detail: `${status.queuedTurns} queued turn(s)`,
   });
   if (config !== null) {
-    checks.push(await apiHealth(config));
+    checks.push(...(await apiChecks(config)));
   }
   const errors = checks.filter((check) => check.status === "error").length;
   const warnings = checks.filter((check) => check.status === "warning").length;
@@ -991,6 +1291,9 @@ export async function runCli(
       return;
     case "doctor":
       await doctorCommand(commandArgs);
+      return;
+    case "self-host":
+      await runSelfHostCommand(commandArgs);
       return;
     case "demo":
       await runDemoCommand(

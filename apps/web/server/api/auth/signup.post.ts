@@ -9,7 +9,7 @@ import {
   requestAuthApi,
   throwAuthUpstreamError,
 } from "~/server/utils/auth";
-import type { AuthMessageResponse } from "~/types/auth";
+import type { AuthMessageResponse, AuthPublicConfig } from "~/types/auth";
 
 export default defineEventHandler(async (event): Promise<AuthMessageResponse> => {
   assertSameOrigin(event);
@@ -33,6 +33,21 @@ export default defineEventHandler(async (event): Promise<AuthMessageResponse> =>
     throw createError({
       statusCode: 400,
       statusMessage: "Invalid signup request",
+    });
+  }
+
+  let config: AuthPublicConfig;
+  try {
+    config = await requestAuthApi<AuthPublicConfig>(event, "/v1/auth/config", {
+      method: "GET",
+    });
+  } catch (error) {
+    throwAuthUpstreamError(error, 404, "Signup is not available");
+  }
+  if (config.mode !== "magic_link") {
+    throw createError({
+      statusCode: 404,
+      statusMessage: "Signup is not available",
     });
   }
 

@@ -5,7 +5,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/treadiehq/lore/main/scripts/install.sh | bash
 #
 # Environment overrides:
-#   LORE_VERSION           release tag, for example v0.1.3 (default: latest)
+#   LORE_VERSION           release tag, for example v0.1.4 (default: latest)
 #   LORE_BIN_DIR           install directory (default: /usr/local/bin or ~/.local/bin)
 #   LORE_REPO              GitHub owner/repository (default: treadiehq/lore)
 #   LORE_RELEASE_BASE_URL  alternate releases base URL

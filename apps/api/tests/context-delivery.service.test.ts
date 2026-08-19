@@ -50,7 +50,7 @@ describe("ContextService delivery receipts", () => {
       memoryIds: [memory.id],
       packing: null,
       querySha256: null,
-      retrievalPolicyVersion: "precision-v1",
+      retrievalPolicyVersion: "precision-v2",
       hits: [],
       deliveredAt: "2026-08-12T20:00:00.000Z",
     };
@@ -123,7 +123,7 @@ describe("ContextService delivery receipts", () => {
         eventId: event.id,
         memoryIds: [memory.id],
         querySha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
-        retrievalPolicyVersion: "precision-v1",
+        retrievalPolicyVersion: "precision-v2",
         hits: result.hits,
         packing: result.packing,
       }),

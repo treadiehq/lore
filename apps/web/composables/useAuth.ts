@@ -1,7 +1,9 @@
 import type {
   AuthMessageResponse,
+  AuthPublicConfig,
   AuthSession,
   AuthSessionResponse,
+  PasswordChangeResponse,
 } from "~/types/auth";
 
 type AuthStatus = "idle" | "pending" | "authenticated" | "anonymous";
@@ -9,6 +11,7 @@ type AuthStatus = "idle" | "pending" | "authenticated" | "anonymous";
 export function useAuth() {
   const session = useState<AuthSession | null>("auth-session", () => null);
   const status = useState<AuthStatus>("auth-status", () => "idle");
+  const config = useState<AuthPublicConfig | null>("auth-config", () => null);
   const requestFetch = useRequestFetch();
   const requestHeaders = import.meta.server
     ? useRequestHeaders(["cookie"])
@@ -44,11 +47,29 @@ export function useAuth() {
     }
   }
 
-  async function login(email: string): Promise<AuthMessageResponse> {
-    return await requestFetch<AuthMessageResponse>("/api/auth/login", {
+  async function getAuthConfig(options: { force?: boolean } = {}) {
+    if (!options.force && config.value !== null) {
+      return config.value;
+    }
+    config.value = await requestFetch<AuthPublicConfig>("/api/auth/config");
+    return config.value;
+  }
+
+  async function login(
+    email: string,
+    password?: string,
+  ): Promise<AuthMessageResponse | AuthSessionResponse> {
+    const response = await requestFetch<
+      AuthMessageResponse | AuthSessionResponse
+    >("/api/auth/login", {
       method: "POST",
-      body: { email },
+      body: { email, ...(password === undefined ? {} : { password }) },
     });
+    if ("session" in response) {
+      session.value = response.session;
+      status.value = "authenticated";
+    }
+    return response;
   }
 
   async function signup(
@@ -81,6 +102,47 @@ export function useAuth() {
     }
   }
 
+  async function bootstrapOwner(
+    email: string,
+    password: string,
+    bootstrapToken: string,
+  ): Promise<AuthSession> {
+    const response = await requestFetch<AuthSessionResponse>(
+      "/api/auth/bootstrap",
+      {
+        method: "POST",
+        body: { email, password, bootstrapToken },
+      },
+    );
+    session.value = response.session;
+    status.value = "authenticated";
+    config.value = { mode: "local_owner", bootstrapRequired: false };
+    return response.session;
+  }
+
+  async function resetPassword(
+    token: string,
+    password: string,
+  ): Promise<AuthSession> {
+    const response = await requestFetch<AuthSessionResponse>("/api/auth/reset", {
+      method: "POST",
+      body: { token, password },
+    });
+    session.value = response.session;
+    status.value = "authenticated";
+    return response.session;
+  }
+
+  async function changePassword(
+    currentPassword: string,
+    newPassword: string,
+  ): Promise<PasswordChangeResponse> {
+    return await requestFetch<PasswordChangeResponse>("/api/auth/password", {
+      method: "POST",
+      body: { currentPassword, newPassword },
+    });
+  }
+
   async function signOut(): Promise<void> {
     status.value = "pending";
     try {
@@ -94,12 +156,17 @@ export function useAuth() {
   return {
     session,
     status,
+    config,
     isAuthenticated,
     organizationName,
     getSession,
+    getAuthConfig,
     login,
     signup,
     verify,
+    bootstrapOwner,
+    resetPassword,
+    changePassword,
     signOut,
   };
 }

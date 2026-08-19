@@ -1,6 +1,6 @@
 {
   "name": "lore",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.34.5",
@@ -29,10 +29,13 @@
     "test:db:compose": "pnpm build:packages && docker compose --profile test up -d --wait postgres-test && RUN_DATABASE_TESTS=1 TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5433/lore_test vitest run tests/database.integration.test.ts",
     "test:browser": "playwright test",
     "test:browser:install": "playwright install chromium",
+    "test:deploy-assets": "node scripts/validate-deployment-assets.mjs",
+    "test:deployment-smoke": "node scripts/deployment-smoke.mjs",
     "test:agents:live": "sh -c 'set -a; [ ! -f .env ] || . ./.env; set +a; tsx scripts/native-agents-live-acceptance.ts'",
     "test:devin:live": "pnpm build:packages && sh -c 'set -a; [ ! -f .env ] || . ./.env; set +a; tsx scripts/devin-live-acceptance.ts'",
     "test:chain:live": "pnpm build:packages && sh -c 'set -a; [ ! -f .env ] || . ./.env; set +a; tsx scripts/three-agent-chain-live-acceptance.ts'",
     "test:github:live": "pnpm build:packages && sh -c 'set -a; [ ! -f .env ] || . ./.env; set +a; tsx scripts/github-pr-live-acceptance.ts'",
+    "test:opencode:live": "pnpm build:packages && sh -c 'set -a; [ ! -f .env ] || . ./.env; set +a; tsx scripts/opencode-live-acceptance.ts'",
     "test:pack": "pnpm build:packages && node scripts/package-smoke.mjs",
     "db:generate": "pnpm --filter @lore-co/database run db:generate",
     "db:migrate": "pnpm --filter @lore-co/database run db:migrate",
@@ -44,9 +47,11 @@
   "devDependencies": {
     "@playwright/test": "^1.62.1",
     "@types/node": "^26.2.0",
+    "smol-toml": "^1.8.0",
     "tsx": "^4.23.12",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.10",
+    "yaml": "^2.9.0"
   },
   "pnpm": {
     "overrides": {

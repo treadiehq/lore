@@ -116,7 +116,7 @@ describe("native hook runtime", () => {
     ).not.toBe((requests[0]?.body as { eventId?: string }).eventId);
   });
 
-  it("collects rename-aware bounded file evidence and narrows learning scope", async () => {
+  it("keeps rename-aware file evidence out of repository learning scope", async () => {
     const home = await configuredHome();
     const repository = await mkdtemp(resolve(tmpdir(), "lore-runtime-repo-"));
     homes.push(repository);
@@ -155,7 +155,7 @@ describe("native hook runtime", () => {
       {
         session_id: "renamed-session",
         hook_event_name: "UserPromptSubmit",
-        cwd: repository,
+        cwd: resolve(repository, "src"),
         prompt: "Use the new file convention.",
       },
       "claude",
@@ -163,10 +163,12 @@ describe("native hook runtime", () => {
     );
 
     expect(requests[0]).toMatchObject({
-      scope: { repo: expect.stringMatching(/^lore-runtime-repo-/u) },
+      scope: {
+        repo: expect.stringMatching(/^lore-runtime-repo-/u),
+        path: "src",
+      },
       learningScope: {
         repo: expect.stringMatching(/^lore-runtime-repo-/u),
-        path: "src/new.ts",
       },
       files: ["src/new.ts"],
       diff: expect.stringContaining("rename from src/old.ts"),
@@ -249,6 +251,64 @@ describe("native hook runtime", () => {
       { home, fetch: fetchMock as typeof fetch },
     );
     expect(silent).toBeUndefined();
+  });
+
+  it("labels governed captures as proposed until activation", async () => {
+    const home = await configuredHome();
+    const configPath = resolve(home, ".lore", "config.json");
+    const config = JSON.parse(await readFile(configPath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        ...config,
+        dashboardUrl: "https://app.lore.example.test",
+      }),
+    );
+    await handleHookEvent(
+      {
+        session_id: "proposal-session",
+        hook_event_name: "Stop",
+        last_assistant_message: "Use the old store.",
+      },
+      "codex",
+      { home },
+    );
+    const output = await handleHookEvent(
+      {
+        session_id: "proposal-session",
+        hook_event_name: "UserPromptSubmit",
+        prompt: "No, use AccountStore instead.",
+      },
+      "codex",
+      {
+        home,
+        fetch: vi.fn(async () =>
+          Response.json({
+            observation: {
+              memories: [
+                {
+                  id: "33333333-3333-4333-8333-333333333333",
+                  content: "Use AccountStore instead.",
+                  status: "proposed",
+                },
+              ],
+            },
+            context: { text: "", memories: [], hits: [] },
+          }),
+        ) as typeof fetch,
+      },
+    );
+
+    expect(output?.systemMessage).toContain(
+      "Lore proposed: Use AccountStore instead.",
+    );
+    expect(output?.systemMessage).toContain(
+      "Review proposal: https://app.lore.example.test/memories/33333333-3333-4333-8333-333333333333",
+    );
+    expect(output?.systemMessage).not.toContain("Lore learned");
   });
 
   it("pairs Stop with the next prompt and returns hook JSON", async () => {

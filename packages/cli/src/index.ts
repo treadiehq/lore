@@ -1,9 +1,14 @@
 export {
+  LORE_OPENCODE_PLUGIN,
+  countLoreOpenCodePlugins,
   countLoreHooks,
   getLorePaths,
   mergeLoreHooks,
+  mergeLoreOpenCodePlugin,
+  removeLoreOpenCodePlugin,
   removeLoreHooks,
   runCli,
+  type ConfiguredAgentName,
   type ConnectorConfig,
   type LorePaths,
 } from "./cli.js";
@@ -13,6 +18,7 @@ export {
   redactSecrets,
   runHook,
   type AgentName,
+  type CommandHookAgentName,
   type HookResult,
   type HookRuntimeOptions,
   type TurnRequest,
@@ -33,6 +39,14 @@ export {
   type ReviewSeverity,
 } from "./review-output.js";
 export { runDevinCommand } from "./devin.js";
+export {
+  SELF_HOST_DOWN_HELP,
+  SELF_HOST_HELP,
+  SELF_HOST_RESET_HELP,
+  SELF_HOST_STATUS_HELP,
+  SELF_HOST_UP_HELP,
+  runSelfHostCommand,
+} from "./self-host.js";
 export {
   DevinApiClient,
   type CreateDevinSessionInput,

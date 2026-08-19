@@ -18,6 +18,7 @@ export const memoryCategories: readonly MemoryCategory[] = [
 
 export const memoryStatuses = [
   "active",
+  "proposed",
   "suppressed",
   "superseded",
   "deleted",

@@ -1,0 +1,102 @@
+name: Provider staging gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: Staging provider
+        required: true
+        type: choice
+        options:
+          - railway
+          - coolify
+          - dokploy
+          - fly
+      deploy:
+        description: Trigger the environment deployment hook before verification
+        required: true
+        type: boolean
+        default: true
+      write_canary:
+        description: Run the reversible write/read/delete canary
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: staging-${{ inputs.provider }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Validate checked-in provider assets
+        run: pnpm test:deploy-assets
+
+      - name: Trigger provider deployment
+        if: inputs.deploy
+        env:
+          DEPLOY_HOOK: ${{ secrets.LORE_STAGING_DEPLOY_HOOK }}
+        run: |
+          test -n "$DEPLOY_HOOK" || {
+            echo "LORE_STAGING_DEPLOY_HOOK is required in this GitHub Environment" >&2
+            exit 1
+          }
+          curl --fail --silent --show-error \
+            --request POST \
+            --max-time 30 \
+            "$DEPLOY_HOOK" >/dev/null
+
+      - name: Wait for the immutable revision and verify
+        env:
+          LORE_API_URL: ${{ vars.LORE_STAGING_API_URL }}
+          LORE_WEB_URL: ${{ vars.LORE_STAGING_WEB_URL }}
+          LORE_WORKSPACE_TOKEN: ${{ secrets.LORE_STAGING_WORKSPACE_TOKEN }}
+          EXPECTED_VERSION: ${{ vars.LORE_STAGING_EXPECTED_VERSION }}
+          EXPECTED_REVISION: ${{ vars.LORE_STAGING_EXPECTED_REVISION }}
+          WRITE_CANARY: ${{ inputs.write_canary }}
+        run: |
+          test -n "$LORE_API_URL" || {
+            echo "LORE_STAGING_API_URL is required" >&2
+            exit 1
+          }
+          test -n "$EXPECTED_VERSION" || {
+            echo "LORE_STAGING_EXPECTED_VERSION is required" >&2
+            exit 1
+          }
+          test -n "$EXPECTED_REVISION" || {
+            echo "LORE_STAGING_EXPECTED_REVISION is required" >&2
+            exit 1
+          }
+
+          deadline=$((SECONDS + 600))
+          smoke_args=(
+            --expected-version "$EXPECTED_VERSION"
+            --expected-revision "$EXPECTED_REVISION"
+          )
+          if [ "$WRITE_CANARY" = "true" ]; then
+            smoke_args+=(--write-canary)
+          fi
+          until pnpm test:deployment-smoke -- "${smoke_args[@]}"
+          do
+            if ((SECONDS >= deadline)); then
+              echo "Provider did not reach the expected immutable revision" >&2
+              exit 1
+            fi
+            sleep 10
+          done

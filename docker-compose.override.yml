@@ -1,0 +1,66 @@
+services:
+  postgres:
+    environment:
+      POSTGRES_DB: lore
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+
+  migrate:
+    image: lore-api:local
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+      target: api
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/lore
+
+  api:
+    image: lore-api:local
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+      target: api
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/lore
+      API_JSON_BODY_LIMIT: ${API_JSON_BODY_LIMIT:-2mb}
+      NUXT_ORIGIN: ${NUXT_ORIGIN:-http://localhost:3002}
+      LORE_WORKSPACE_TOKEN: ${LORE_WORKSPACE_TOKEN:-local-lore-development-token}
+      LORE_WORKSPACE_ORGANIZATION: ${LORE_WORKSPACE_ORGANIZATION:-local}
+      LORE_WORKSPACE_NAME: ${LORE_WORKSPACE_NAME:-local}
+      AUTH_MODE: ${AUTH_MODE:-local_owner}
+      LORE_OWNER_BOOTSTRAP_TOKEN: ${LORE_OWNER_BOOTSTRAP_TOKEN:-}
+      AUTH_EMAIL_MODE: ${AUTH_EMAIL_MODE:-local}
+      AUTH_WEB_ORIGIN: ${AUTH_WEB_ORIGIN:-http://localhost:3002}
+      AUTH_EMAIL_FROM: "${AUTH_EMAIL_FROM:-Lore <auth@example.com>}"
+      AUTH_PASSWORD_RESET_TTL_MINUTES: ${AUTH_PASSWORD_RESET_TTL_MINUTES:-15}
+
+  web:
+    image: lore-web:local
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+      target: web
+    environment:
+      NUXT_AUTH_COOKIE_SECURE: ${NUXT_AUTH_COOKIE_SECURE:-false}
+      NUXT_PUBLIC_LORE_CONNECTOR_API_URL: ${NUXT_PUBLIC_LORE_CONNECTOR_API_URL:-http://localhost:3004}
+
+  postgres-test:
+    image: pgvector/pgvector:0.8.6-pg18
+    profiles: ["test"]
+    environment:
+      POSTGRES_DB: lore_test
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "127.0.0.1:5433:5432"
+    tmpfs:
+      - /var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d lore_test"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+      start_period: 5s

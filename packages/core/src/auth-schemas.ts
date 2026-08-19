@@ -92,6 +92,19 @@ export type RevokeWorkspaceTokenResponse = z.infer<
 export const AuthUserStatusSchema = z.enum(["active", "disabled"]);
 export type AuthUserStatus = z.infer<typeof AuthUserStatusSchema>;
 
+export const AuthUserRoleSchema = z.enum(["owner", "member"]);
+export type AuthUserRole = z.infer<typeof AuthUserRoleSchema>;
+
+export const AuthModeSchema = z.enum([
+  "magic_link",
+  "local_owner",
+  "disabled",
+]);
+export type AuthMode = z.infer<typeof AuthModeSchema>;
+
+export const AuthPasswordSchema = z.string().min(12).max(1_024);
+export type AuthPassword = z.infer<typeof AuthPasswordSchema>;
+
 export const AuthSignupRequestSchema = z
   .object({
     organizationName: z.string().trim().min(1).max(200),
@@ -106,6 +119,50 @@ export const AuthLoginRequestSchema = z
   })
   .strict();
 export type AuthLoginRequest = z.infer<typeof AuthLoginRequestSchema>;
+
+export const LocalOwnerLoginRequestSchema = z
+  .object({
+    email: AuthEmailSchema,
+    password: AuthPasswordSchema,
+  })
+  .strict();
+export type LocalOwnerLoginRequest = z.infer<
+  typeof LocalOwnerLoginRequestSchema
+>;
+
+export const LocalOwnerBootstrapClaimRequestSchema = z
+  .object({
+    email: AuthEmailSchema,
+    password: AuthPasswordSchema,
+  })
+  .strict();
+export type LocalOwnerBootstrapClaimRequest = z.infer<
+  typeof LocalOwnerBootstrapClaimRequestSchema
+>;
+
+export const PasswordChangeRequestSchema = z
+  .object({
+    currentPassword: AuthPasswordSchema,
+    newPassword: AuthPasswordSchema,
+  })
+  .strict()
+  .refine((value) => value.currentPassword !== value.newPassword, {
+    message: "New password must differ from the current password",
+    path: ["newPassword"],
+  });
+export type PasswordChangeRequest = z.infer<
+  typeof PasswordChangeRequestSchema
+>;
+
+export const PasswordResetConsumeRequestSchema = z
+  .object({
+    token: AuthTokenSchema,
+    password: AuthPasswordSchema,
+  })
+  .strict();
+export type PasswordResetConsumeRequest = z.infer<
+  typeof PasswordResetConsumeRequestSchema
+>;
 
 export const AuthInitiationResponseSchema = z
   .object({
@@ -130,16 +187,23 @@ export const AuthSessionProfileSchema = z
     workspaceId: z.uuid(),
     workspaceName: z.string().trim().min(1).max(200),
     organization: z.string().trim().min(1).max(200),
+    role: AuthUserRoleSchema,
+    expiresAt: z.iso.datetime(),
   })
   .strict();
 export type AuthSessionProfile = z.infer<typeof AuthSessionProfileSchema>;
 
-export const AuthVerifyResponseSchema = z
+export const AuthenticatedSessionResponseSchema = z
   .object({
     sessionToken: AuthTokenSchema,
     session: AuthSessionProfileSchema,
   })
   .strict();
+export type AuthenticatedSessionResponse = z.infer<
+  typeof AuthenticatedSessionResponseSchema
+>;
+
+export const AuthVerifyResponseSchema = AuthenticatedSessionResponseSchema;
 export type AuthVerifyResponse = z.infer<typeof AuthVerifyResponseSchema>;
 
 export const AuthSessionResponseSchema = z
@@ -148,6 +212,27 @@ export const AuthSessionResponseSchema = z
   })
   .strict();
 export type AuthSessionResponse = z.infer<typeof AuthSessionResponseSchema>;
+
+export const AuthPublicConfigResponseSchema = z.discriminatedUnion("mode", [
+  z.object({ mode: z.literal("disabled") }).strict(),
+  z.object({ mode: z.literal("magic_link") }).strict(),
+  z
+    .object({
+      mode: z.literal("local_owner"),
+      bootstrapRequired: z.boolean(),
+    })
+    .strict(),
+]);
+export type AuthPublicConfigResponse = z.infer<
+  typeof AuthPublicConfigResponseSchema
+>;
+
+export const PasswordChangeResponseSchema = z
+  .object({ changed: z.literal(true) })
+  .strict();
+export type PasswordChangeResponse = z.infer<
+  typeof PasswordChangeResponseSchema
+>;
 
 export const AuthLogoutRequestSchema = z.object({}).strict().default({});
 export type AuthLogoutRequest = z.infer<typeof AuthLogoutRequestSchema>;
@@ -161,9 +246,35 @@ export const AuthenticatedWorkspaceSchema =
     userId: z.uuid().optional(),
     email: AuthEmailSchema.optional(),
     workspaceName: z.string().trim().min(1).max(200).optional(),
+    role: AuthUserRoleSchema.optional(),
+    sessionExpiresAt: z.iso.datetime().optional(),
   });
 export type AuthenticatedWorkspace = z.infer<
   typeof AuthenticatedWorkspaceSchema
+>;
+
+export const ServerIdentitySchema = z
+  .object({
+    version: z
+      .string()
+      .regex(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u),
+    revision: z.string().trim().min(1).max(200).nullable(),
+  })
+  .strict();
+export type ServerIdentity = z.infer<typeof ServerIdentitySchema>;
+
+export const WorkspaceIdentityResponseSchema = z
+  .object({
+    workspaceId: z.uuid(),
+    workspaceName: z.string().trim().min(1).max(200),
+    organization: z.string().trim().min(1).max(200),
+    credentialType: z.enum(["workspace_token", "session"]),
+    role: AuthUserRoleSchema.optional(),
+    server: ServerIdentitySchema,
+  })
+  .strict();
+export type WorkspaceIdentityResponse = z.infer<
+  typeof WorkspaceIdentityResponseSchema
 >;
 
 export const SignupRequestSchema = AuthSignupRequestSchema;

@@ -5,13 +5,20 @@ import {
   setResponseStatus,
   type H3Event,
 } from "h3";
-import type { Memory, MemoryCategory, MemoryScope } from "@lore-co/sdk";
+import type {
+  Memory,
+  MemoryCategory,
+  MemoryScope,
+  WorkspaceLearningPolicy,
+} from "@lore-co/sdk";
 
 const workspaceId = "22222222-2222-4222-8222-222222222222";
 const sourceEventId = "11111111-1111-4111-8111-111111111111";
 const historicalId = "00000000-0000-4000-8000-000000000001";
 const currentId = "00000000-0000-4000-8000-000000000002";
 const replacementId = "00000000-0000-4000-8000-000000000003";
+const proposalId = "00000000-0000-4000-8000-000000000004";
+const proposalConflictId = "66666666-6666-4666-8666-666666666666";
 const now = "2026-08-13T12:00:00.000Z";
 
 function memory(input: {
@@ -81,6 +88,20 @@ function initialMemories(): Memory[] {
       createdAt: "2026-08-12T10:00:00.000Z",
     }),
     memory({
+      id: proposalId,
+      content: "Use BillingAccountStore for account writes.",
+      scope: {
+        organization: "Acme Engineering",
+        project: "Commerce",
+        repo: "acme/accounts",
+      },
+      category: "correction",
+      status: "proposed",
+      supersedesMemoryId: currentId,
+      sourceEventId,
+      createdAt: "2026-08-13T11:00:00.000Z",
+    }),
+    memory({
       id: "00000000-0000-4000-8000-000000000010",
       content: "Use LedgerStore for ledger writes.",
       scope: {
@@ -146,7 +167,7 @@ function activityMemory(index: number) {
     id: `20000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
     content: `Fixture captured learning ${index + 1}.`,
     category: "correction" as const,
-    status: "active" as const,
+    status: index === 0 ? ("proposed" as const) : ("active" as const),
   };
 }
 
@@ -185,10 +206,24 @@ function initialActivities() {
 
 let memories = initialMemories();
 let activities = initialActivities();
+let ownerClaimed = false;
+let learningPolicy: WorkspaceLearningPolicy = {
+  workspaceId,
+  learningMode: "trust_tiered" as const,
+  llmConflictAnalysisEnabled: false,
+  updatedAt: now,
+};
 
 export function resetE2eFixture(): void {
   memories = initialMemories();
   activities = initialActivities();
+  ownerClaimed = false;
+  learningPolicy = {
+    workspaceId,
+    learningMode: "trust_tiered",
+    llmConflictAnalysisEnabled: false,
+    updatedAt: now,
+  };
 }
 
 export const e2eSession = {
@@ -197,7 +232,20 @@ export const e2eSession = {
   workspaceId,
   workspaceName: "Acme Engineering",
   organization: "Acme Engineering",
+  role: "owner" as const,
+  expiresAt: "2099-01-01T00:00:00.000Z",
 };
+
+export function e2eAuthConfig() {
+  return {
+    mode: "local_owner" as const,
+    bootstrapRequired: !ownerClaimed,
+  };
+}
+
+export function claimE2eOwner(): void {
+  ownerClaimed = true;
+}
 
 function queryString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() !== ""
@@ -333,6 +381,117 @@ async function correctLearning(event: H3Event, id: string) {
   return { memory: replacement, supersededMemory: current };
 }
 
+function proposalDetail(id: string) {
+  const proposal = memories.find((item) => item.id === id);
+  const target = memories.find((item) => item.id === currentId);
+  if (proposal === undefined || proposal.id !== proposalId || target === undefined) {
+    throw createError({ statusCode: 404, statusMessage: "Proposal not found" });
+  }
+  return {
+    memory: proposal,
+    metadata: {
+      memoryId: proposal.id,
+      workspaceId,
+      policyMode: "trust_tiered" as const,
+      reason: "A deterministic replacement target requires conflict review.",
+      provenance: proposal.source,
+      proposedAt: proposal.createdAt,
+      decision: null,
+      reviewerId: null,
+      decisionReason: null,
+      decidedAt: null,
+      decisionTargetMemoryId: null,
+    },
+    conflicts: [
+      {
+        id: proposalConflictId,
+        workspaceId,
+        proposalMemoryId: proposal.id,
+        targetMemoryId: target.id,
+        detector: "deterministic" as const,
+        severity: "blocking" as const,
+        evidence: {
+          summary:
+            "The proposal identifies this memory as its deterministic replacement target.",
+        },
+        createdAt: proposal.createdAt,
+        resolution: null,
+        resolvedAt: null,
+      },
+      {
+        id: "77777777-7777-4777-8777-777777777777",
+        workspaceId,
+        proposalMemoryId: proposal.id,
+        targetMemoryId: target.id,
+        detector: "lexical" as const,
+        severity: "warning" as const,
+        evidence: {
+          summary:
+            "An active memory in the same effective scope uses overlapping terms.",
+          details: { matchedTerms: ["account", "writes", "store"] },
+        },
+        createdAt: proposal.createdAt,
+        resolution: null,
+        resolvedAt: null,
+      },
+    ],
+    conflictTargets: [target],
+  };
+}
+
+async function reviewProposal(event: H3Event, id: string) {
+  const detail = proposalDetail(id);
+  const body = await readBody<{
+    decision?: "approve" | "use_proposal" | "keep_both" | "reject";
+    reason?: string;
+    targetMemoryId?: string;
+    scope?: MemoryScope;
+  }>(event);
+  if (
+    body.decision === undefined ||
+    body.reason === undefined ||
+    body.reason.trim() === ""
+  ) {
+    throw createError({ statusCode: 400, statusMessage: "Review is invalid" });
+  }
+  const proposal = detail.memory;
+  const target = detail.conflictTargets[0]!;
+  if (body.decision === "use_proposal") {
+    target.status = "superseded";
+    target.updatedAt = now;
+    proposal.supersedesMemoryId = target.id;
+  } else {
+    proposal.supersedesMemoryId = null;
+  }
+  proposal.status = body.decision === "reject" ? "deleted" : "active";
+  proposal.deletedAt = body.decision === "reject" ? now : null;
+  proposal.updatedAt = now;
+  if (body.scope !== undefined && body.decision !== "reject") {
+    proposal.scope = {
+      ...body.scope,
+      organization: "Acme Engineering",
+    };
+  }
+  return {
+    proposal,
+    metadata: {
+      ...detail.metadata,
+      decision: body.decision,
+      reviewerId: e2eSession.userId,
+      decisionReason: body.reason,
+      decidedAt: now,
+      decisionTargetMemoryId:
+        body.decision === "use_proposal" ? target.id : null,
+    },
+    conflicts: detail.conflicts.map((conflict) => ({
+      ...conflict,
+      resolution: body.decision,
+      resolvedAt: now,
+    })),
+    supersededMemory: body.decision === "use_proposal" ? target : null,
+  };
+}
+
 function listActivity(event: H3Event) {
   const query = getQuery(event);
   const limit = Math.max(1, Math.min(Number(query.limit ?? 50), 100));
@@ -375,10 +534,53 @@ export async function handleE2eLoreRequest(
   if (method === "GET" && path === "v1/activity") {
     return listActivity(event);
   }
+  if (method === "GET" && path === "v1/workspace/policy") {
+    return learningPolicy;
+  }
+  if (method === "PATCH" && path === "v1/workspace/policy") {
+    const body = await readBody<{
+      learningMode?: "trust_tiered" | "proposal_only";
+      llmConflictAnalysisEnabled?: boolean;
+    }>(event);
+    learningPolicy = {
+      ...learningPolicy,
+      ...(body.learningMode === undefined
+        ? {}
+        : { learningMode: body.learningMode }),
+      ...(body.llmConflictAnalysisEnabled === undefined
+        ? {}
+        : {
+            llmConflictAnalysisEnabled:
+              body.llmConflictAnalysisEnabled,
+          }),
+      updatedAt: now,
+    };
+    return learningPolicy;
+  }
+  const proposalMatch =
+    /^v1\/(?:learnings|memories)\/([^/]+)\/proposal$/u.exec(path);
+  if (method === "GET" && proposalMatch?.[1] !== undefined) {
+    return proposalDetail(decodeURIComponent(proposalMatch[1]));
+  }
+  const reviewMatch =
+    /^v1\/(?:learnings|memories)\/([^/]+)\/review$/u.exec(path);
+  if (method === "POST" && reviewMatch?.[1] !== undefined) {
+    return await reviewProposal(
+      event,
+      decodeURIComponent(reviewMatch[1]),
+    );
+  }
   const inspectionMatch =
     /^v1\/(?:learnings|memories)\/([^/]+)\/inspection$/u.exec(path);
   if (method === "GET" && inspectionMatch?.[1] !== undefined) {
     return inspection(decodeURIComponent(inspectionMatch[1]));
+  }
+  const learningMatch = /^v1\/(?:learnings|memories)\/([^/]+)$/u.exec(path);
+  if (method === "GET" && learningMatch?.[1] !== undefined) {
+    const learning = memories.find(
+      (item) => item.id === decodeURIComponent(learningMatch[1]!),
+    );
+    return { memory: learning ?? null };
   }
   const correctionMatch =
     /^v1\/(?:learnings|memories)\/([^/]+)\/corrections$/u.exec(path);

@@ -6,8 +6,11 @@ import {
   GetMemoryResponseSchema,
   ListMemoriesResponseSchema,
   ObserveResponseSchema,
+  ProposalDetailResponseSchema,
   RememberResponseSchema,
+  ReviewProposalResponseSchema,
   UpdateMemoryResponseSchema,
+  WorkspaceLearningPolicySchema,
   type AgentInteraction,
   type AgentTask,
   type CorrectMemoryDto,
@@ -21,8 +24,13 @@ import {
   type MemoryCategory,
   type MemoryScope,
   type ObserveResponse,
+  type ProposalDetailResponse,
   type RememberResponse,
+  type ReviewProposalDto,
+  type ReviewProposalResponse,
+  type UpdateWorkspaceLearningPolicy,
   type UpdateMemoryResponse,
+  type WorkspaceLearningPolicy,
 } from "@lore-co/core/schemas";
 import {
   ActivityListResponseSchema,
@@ -56,10 +64,12 @@ import {
   CreateWorkspaceTokenResponseSchema,
   ListWorkspaceTokensResponseSchema,
   RevokeWorkspaceTokenResponseSchema,
+  WorkspaceIdentityResponseSchema,
   type CreateWorkspaceTokenRequest,
   type CreateWorkspaceTokenResponse,
   type ListWorkspaceTokensResponse,
   type RevokeWorkspaceTokenResponse,
+  type WorkspaceIdentityResponse,
   type WorkspaceToken,
   type WorkspaceTokenStatus,
 } from "@lore-co/core/auth-schemas";
@@ -76,6 +86,10 @@ export type {
   ListMemoriesResponse,
   Memory,
   MemoryCategory,
+  MemoryConflict,
+  MemoryConflictDetectorKind,
+  MemoryConflictEvidence,
+  MemoryConflictSeverity,
   MemoryScope,
   MemorySource,
   MemoryStatus,
@@ -85,8 +99,13 @@ export type {
   LearningSource,
   LearningStatus,
   ObserveResponse,
+  ProposalDetailResponse,
   RememberResponse,
+  ReviewProposalResponse,
+  UpdateWorkspaceLearningPolicy,
   UpdateMemoryResponse,
+  WorkspaceLearningMode,
+  WorkspaceLearningPolicy,
 } from "@lore-co/core/schemas";
 export type {
   ActivityItem,
@@ -117,6 +136,7 @@ export type {
   CreateWorkspaceTokenResponse,
   ListWorkspaceTokensResponse,
   RevokeWorkspaceTokenResponse,
+  WorkspaceIdentityResponse,
   WorkspaceToken,
   WorkspaceTokenStatus,
 } from "@lore-co/core/auth-schemas";
@@ -150,6 +170,10 @@ export interface UpdateMemoryInput {
   category?: MemoryCategory;
 }
 export type UpdateLearningInput = UpdateMemoryInput;
+export type ReviewProposalInput = Omit<
+  ReviewProposalDto,
+  "proposalMemoryId" | "reviewerId"
+>;
 
 export interface ContextResponse {
   memories: GetContextResponse["memories"];
@@ -532,6 +556,45 @@ export class SharedMemoryClient {
     );
   }
 
+  getWorkspaceLearningPolicy(): Promise<WorkspaceLearningPolicy> {
+    return this.#request(
+      "GET",
+      "/v1/workspace/policy",
+      WorkspaceLearningPolicySchema,
+    );
+  }
+
+  updateWorkspaceLearningPolicy(
+    input: UpdateWorkspaceLearningPolicy,
+  ): Promise<WorkspaceLearningPolicy> {
+    return this.#request(
+      "PATCH",
+      "/v1/workspace/policy",
+      WorkspaceLearningPolicySchema,
+      input,
+    );
+  }
+
+  getProposal(id: string): Promise<ProposalDetailResponse> {
+    return this.#request(
+      "GET",
+      `/v1/memories/${encodeURIComponent(id)}/proposal`,
+      ProposalDetailResponseSchema,
+    );
+  }
+
+  reviewProposal(
+    id: string,
+    input: ReviewProposalInput,
+  ): Promise<ReviewProposalResponse> {
+    return this.#request(
+      "POST",
+      `/v1/memories/${encodeURIComponent(id)}/review`,
+      ReviewProposalResponseSchema,
+      input,
+    );
+  }
+
   listActivity(input: ActivityQuery = {}): Promise<ActivityListResponse> {
     const filters = ActivityQuerySchema.parse(input);
     const query = new URLSearchParams();
@@ -569,6 +632,14 @@ export class SharedMemoryClient {
       "GET",
       "/v1/workspace-tokens",
       ListWorkspaceTokensResponseSchema,
+    );
+  }
+
+  getWorkspaceIdentity(): Promise<WorkspaceIdentityResponse> {
+    return this.#request(
+      "GET",
+      "/v1/workspace/identity",
+      WorkspaceIdentityResponseSchema,
     );
   }
 

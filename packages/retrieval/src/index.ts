@@ -1,5 +1,6 @@
 import {
   AgentTaskSchema,
+  isNativeCodingAgent,
   normalizeTaskScope,
   redactSensitiveText,
   type AgentTask,
@@ -13,7 +14,7 @@ import {
 } from "@lore-co/core";
 export * from "./context-packing.js";
 
-export const RETRIEVAL_POLICY_VERSION = "precision-v1";
+export const RETRIEVAL_POLICY_VERSION = "precision-v2";
 
 const STOP_WORDS = new Set([
   "a",
@@ -159,14 +160,16 @@ function rankedHit(
   task: AgentTask,
   queryTerms: ReadonlySet<string>,
   searchText: string,
+  options: { semantic?: boolean } = {},
 ): Omit<RetrievalHit, "lexicalRank" | "semanticRank"> | null {
   const taskScope = normalizeTaskScope(task);
-  const nativeAgent = task.agent === "claude" || task.agent === "codex";
+  const nativeAgent = isNativeCodingAgent(task.agent);
   if (
-    nativeAgent &&
-    (taskScope.repo === undefined ||
-      (memory.scope.repo !== undefined &&
-        memory.scope.repo !== taskScope.repo))
+    memory.scope.organization !== taskScope.organization ||
+    (memory.scope.project !== undefined &&
+      memory.scope.project !== taskScope.project) ||
+    (memory.scope.repo !== undefined && memory.scope.repo !== taskScope.repo) ||
+    (nativeAgent && taskScope.repo === undefined)
   ) {
     return null;
   }
@@ -189,10 +192,13 @@ function rankedHit(
       ),
     ),
   ];
-  if (
+  const pathMatch =
     memory.scope.path !== undefined &&
-    pathApplies(memory.scope.path, paths)
-  ) {
+    pathApplies(memory.scope.path, paths);
+  if (memory.scope.path !== undefined && !pathMatch) {
+    return null;
+  }
+  if (pathMatch) {
     reasons.add("path");
     score += 5;
   }
@@ -200,10 +206,13 @@ function rankedHit(
     taskScope.component,
     ...(task.components ?? []),
   ]);
-  if (
+  const componentMatch =
     memory.scope.component !== undefined &&
-    components.has(memory.scope.component)
-  ) {
+    components.has(memory.scope.component);
+  if (memory.scope.component !== undefined && !componentMatch) {
+    return null;
+  }
+  if (componentMatch) {
     reasons.add("component");
     score += 4;
   }
@@ -218,13 +227,20 @@ function rankedHit(
   if (evidence.matchedTerms.length > 0) {
     reasons.add("lexical");
   }
+  if (options.semantic === true) {
+    reasons.add("semantic");
+  }
 
   const strongMatch =
     reasons.has("path") ||
     reasons.has("component") ||
     reasons.has("symbol") ||
-    evidence.matchedTerms.length >= 2;
-  if ((nativeAgent && !strongMatch) || (!nativeAgent && score <= 0)) {
+    evidence.matchedTerms.length >= 2 ||
+    options.semantic === true;
+  if (
+    (nativeAgent && !strongMatch) ||
+    (!nativeAgent && score <= 0 && options.semantic !== true)
+  ) {
     return null;
   }
   return {
@@ -523,6 +539,7 @@ export class HybridMemoryRetriever implements MemoryRetriever {
       return lexicalPromise;
     }
     const searchText = redactSensitiveText(taskSearchText(task)).text;
+    const queryTerms = new Set(tokenizeForMemorySearch(searchText));
     const boundedSearchText = Array.from(searchText)
       .slice(0, this.#maximumQueryCharacters)
       .join("")
@@ -554,64 +571,49 @@ export class HybridMemoryRetriever implements MemoryRetriever {
     ]);
     const scores = new Map<string, RetrievalHit & { bestRank: number }>();
     const addLexical = (hits: readonly RetrievalHit[]): void => {
-      hits.forEach((hit, index) => {
-        const rank = index + 1;
-        const current = scores.get(hit.memory.id);
-        scores.set(hit.memory.id, {
-          ...hit,
-          score:
-            (current?.score ?? 0) +
-            1 / (this.#reciprocalRankConstant + rank),
-          bestRank: Math.min(current?.bestRank ?? rank, rank),
+      hits
+        .filter((hit) => hit.memory.status === "active")
+        .forEach((hit, index) => {
+          const rank = index + 1;
+          const current = scores.get(hit.memory.id);
+          scores.set(hit.memory.id, {
+            ...hit,
+            score:
+              (current?.score ?? 0) +
+              1 / (this.#reciprocalRankConstant + rank),
+            bestRank: Math.min(current?.bestRank ?? rank, rank),
+          });
         });
-      });
     };
     const addSemantic = (memories: readonly Memory[]): void => {
-      const taskScope = normalizeTaskScope(task);
-      const nativeAgent = task.agent === "claude" || task.agent === "codex";
-      const taskPaths = [
-        ...new Set(
-          [taskScope.path, ...(task.files ?? [])].filter(
-            (value): value is string => value !== undefined,
-          ),
-        ),
-      ];
-      const taskComponents = new Set([
-        taskScope.component,
-        ...(task.components ?? []),
-      ]);
       memories.forEach((memory, index) => {
-        if (
-          (memory.scope.path !== undefined &&
-            !pathApplies(memory.scope.path, taskPaths)) ||
-          (memory.scope.component !== undefined &&
-            !taskComponents.has(memory.scope.component)) ||
-          nativeAgent &&
-          (taskScope.repo === undefined ||
-            (memory.scope.repo !== undefined &&
-              memory.scope.repo !== taskScope.repo))
-        ) {
+        const policyHit =
+          memory.status === "active"
+            ? rankedHit(memory, task, queryTerms, searchText, {
+                semantic: true,
+              })
+            : null;
+        if (policyHit === null) {
           return;
         }
         const rank = index + 1;
         const current = scores.get(memory.id);
         const reasons = new Set<RetrievalMatchReason>([
           ...(current?.reasons ?? []),
-          "semantic",
+          ...policyHit.reasons,
         ]);
-        if (
-          taskScope.repo !== undefined &&
-          memory.scope.repo === taskScope.repo
-        ) {
-          reasons.add("repository");
-        }
         scores.set(memory.id, {
           memory,
           score:
             (current?.score ?? 0) +
             this.#semanticWeight / (this.#reciprocalRankConstant + rank),
           reasons: [...reasons],
-          matchedTerms: current?.matchedTerms ?? [],
+          matchedTerms: [
+            ...new Set([
+              ...(current?.matchedTerms ?? []),
+              ...policyHit.matchedTerms,
+            ]),
+          ],
           lexicalRank: current?.lexicalRank ?? null,
           semanticRank: rank,
           bestRank: Math.min(current?.bestRank ?? rank, rank),

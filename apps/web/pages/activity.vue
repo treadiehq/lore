@@ -299,7 +299,9 @@ function humanReadableMemory(
   const capturedRule =
     /\bLORE_CAPTURED_[A-Z0-9_-]+\s*:\s*([\s\S]+)$/iu.exec(memory.content)?.[1];
   return capturedRule === undefined
-    ? "Lore successfully captured this test message as a reusable learning."
+    ? memory.status === "proposed"
+      ? "Lore successfully recorded this test message as a proposal."
+      : "Lore successfully activated this test message as reusable memory."
     : cleanSentence(capturedRule);
 }
 
@@ -337,6 +339,14 @@ function capturedLearningDetails(
   );
 }
 
+function proposedMemories(activity: ActivityItem): ActivityItem["learnedMemories"] {
+  return activity.learnedMemories.filter((memory) => memory.status === "proposed");
+}
+
+function activatedMemories(activity: ActivityItem): ActivityItem["learnedMemories"] {
+  return activity.learnedMemories.filter((memory) => memory.status === "active");
+}
+
 function otherAppliedMemories(
   activity: ActivityItem,
 ): ActivityItem["deliveredMemories"] {
@@ -360,8 +370,15 @@ function otherAppliedMemories(
 
 function activityOutcome(activity: ActivityItem): string {
   if (activity.event.type === "observation") {
-    const count = activity.learnedMemories.length;
-    return count === 0 ? "Observed" : `${count} captured`;
+    const proposed = proposedMemories(activity).length;
+    const activated = activatedMemories(activity).length;
+    if (proposed > 0 && activated > 0) {
+      return `${proposed} proposed · ${activated} activated`;
+    }
+    if (proposed > 0) {
+      return `${proposed} proposed`;
+    }
+    return activated === 0 ? "Observed" : `${activated} activated`;
   }
   if (activity.event.type === "context_delivery") {
     const count = activity.deliveredMemories.length;
@@ -371,7 +388,8 @@ function activityOutcome(activity: ActivityItem): string {
     return "No delivery receipt";
   }
   if (activity.deliveredMemories.length === 0) {
-    return "No matching learning";
+    const proposed = proposedMemories(activity).length;
+    return proposed === 0 ? "No matching memory" : `${proposed} proposed`;
   }
   if (isAcceptanceTestActivity(activity)) {
     return "Injection verified";
@@ -401,8 +419,8 @@ function capitalize(value: string): string {
           Activity
         </h1>
         <p class="lore-page-description mt-1.5">
-          Review what connected tools observed, what became a learning, and what
-          was injected into later work.
+          Review what connected tools observed, what became active or proposed,
+          and what was injected into later work.
         </p>
       </div>
       <button
@@ -582,12 +600,16 @@ function capitalize(value: string): string {
             <div class="min-w-0">
               <div class="flex flex-wrap items-center gap-2">
                 <span
-                  v-if="activity.learnedMemories.length > 0"
+                  v-if="proposedMemories(activity).length > 0"
                   class="rounded-md border border-lore-accent/30 bg-lore-accent-soft px-2 py-0.5 text-xs font-medium text-lore-accent"
                 >
-                  {{ activity.learnedMemories.length }}
-                  {{ activity.learnedMemories.length === 1 ? "learning" : "learnings" }}
-                  captured
+                  {{ proposedMemories(activity).length }} proposed
+                </span>
+                <span
+                  v-if="activatedMemories(activity).length > 0"
+                  class="rounded-md border border-lore-success/30 bg-lore-success-soft px-2 py-0.5 text-xs font-medium text-lore-success"
+                >
+                  {{ activatedMemories(activity).length }} activated
                 </span>
                 <span class="px-0.5 py-0.5 text-xs font-medium text-lore-text-muted">
                   {{ eventTypeLabel(activity.event.type) }}
@@ -622,13 +644,10 @@ function capitalize(value: string): string {
                     {{ activityMessageLabel(activity) }}
                   </p>
                   <span
-                    v-if="
-                      activity.event.type !== 'context_delivery' &&
-                      activity.learnedMemories.length > 0
-                    "
+                    v-if="activity.event.type !== 'context_delivery' && activatedMemories(activity).length > 0"
                     class="rounded border border-lore-accent/30 bg-lore-accent-soft px-1.5 py-0.5 text-[0.625rem] font-medium text-lore-accent"
                   >
-                    Captured
+                    Activated
                   </span>
                   <span
                     v-if="activity.event.type === 'paired_turn' && primaryMessageWasApplied(activity)"
@@ -654,8 +673,8 @@ function capitalize(value: string): string {
                     <h2 class="lore-section-label">
                       {{
                         capturedLearningDetails(activity).length === 1
-                          ? "Captured learning"
-                          : "Captured learnings"
+                          ? "Captured memory"
+                          : "Captured memories"
                       }}
                     </h2>
                     <span class="text-xs tabular-nums text-lore-text-muted">
@@ -672,6 +691,7 @@ function capitalize(value: string): string {
                         class="lore-focus block rounded-md px-2 py-1.5 text-sm leading-5 text-lore-text-secondary hover:bg-lore-hover hover:text-lore-text"
                       >
                         {{ humanReadableMemory(activity, memory) }}
+                        <MemoryStatusBadge class="mt-1" :status="memory.status" />
                       </NuxtLink>
                     </li>
                   </ul>

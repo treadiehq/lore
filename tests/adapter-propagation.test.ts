@@ -1,6 +1,7 @@
 import { ClaudeAdapter } from "@lore-co/adapter-claude";
 import { CodexAdapter } from "@lore-co/adapter-codex";
 import { DevinAdapter } from "@lore-co/adapter-devin";
+import { GenericAgentAdapter } from "@lore-co/adapter-generic";
 import { describe, expect, it } from "vitest";
 import { createEngineHarness, createEngineHttpBridge } from "./helpers.js";
 
@@ -115,6 +116,51 @@ describe("agent-independent propagation through adapter HTTP boundaries", () => 
     expect(after.task.agent).toBe("claude");
     expect(after.prompt).toContain(
       "RepositoryFactory is deprecated. Use AccountStore instead.",
+    );
+  });
+
+  it("propagates an OpenCode teaching to a newly-created Claude adapter", async () => {
+    const { engine } = createEngineHarness();
+    const bridge = createEngineHttpBridge(engine);
+    const task = {
+      repo: "payments",
+      task: "Update settlement retries",
+      symbols: ["SettlementCoordinator"],
+    };
+    const openCode = new GenericAgentAdapter({
+      id: "opencode",
+      baseUrl: "http://memory.test",
+      fetch: bridge,
+    });
+
+    const observed = await openCode.observe({
+      repo: "payments",
+      sessionId: "opencode-development-session",
+      messages: [
+        {
+          role: "user",
+          id: "opencode-teaching-1",
+          content:
+            "Always keep SettlementCoordinator retries idempotent.",
+        },
+      ],
+    });
+    expect(observed.created).toBe(1);
+    expect(observed.memories[0]?.source).toMatchObject({
+      agent: "opencode",
+      sessionId: "opencode-development-session",
+      messageId: "opencode-teaching-1",
+    });
+
+    const after = await new ClaudeAdapter({
+      baseUrl: "http://memory.test",
+      fetch: bridge,
+    }).prepareTask(task);
+    expect(after.memories).toHaveLength(1);
+    expect(after.memories[0]?.source.agent).toBe("opencode");
+    expect(after.task.agent).toBe("claude");
+    expect(after.prompt).toContain(
+      "SettlementCoordinator retries idempotent",
     );
   });
 });

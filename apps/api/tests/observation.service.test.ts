@@ -182,8 +182,14 @@ describe("InteractionService auditable observations", () => {
     expect(observe).not.toHaveBeenCalled();
   });
 
-  it("does not create workspace-wide native learning without a repository", async () => {
-    const observe = vi.fn();
+  it("uses OpenCode task repository evidence when learning scope is empty", async () => {
+    const observe = vi.fn(async () => ({
+      memories: [],
+      created: 0,
+      duplicates: 0,
+      reconciled: 0,
+      superseded: 0,
+    }));
     const completeObservationEvent = vi.fn(async (input) => ({
       ...event,
       payload: { response: input.response },
@@ -206,15 +212,70 @@ describe("InteractionService auditable observations", () => {
     const result = await service.observeEvent(
       {
         ...request,
-        eventId: "prompt-without-repository",
-        scope: {},
+        connector: "lore-opencode-plugin",
+        agent: "opencode",
+        eventId: "prompt-with-task-repository",
+        scope: { repo: "accounts", path: "src/accounts" },
         learningScope: {},
       },
       workspace,
-      "request-without-repository",
+      "request-with-task-repository",
     );
 
     expect(result).toMatchObject({ memories: [], created: 0, duplicates: 0 });
+    expect(observe).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: {
+          organization: "acme",
+          repo: "accounts",
+          path: "src/accounts",
+        },
+      }),
+    );
+  });
+
+  it("does not create native OpenCode learning without repository evidence", async () => {
+    const observe = vi.fn();
+    const service = new InteractionService(
+      { observe } as unknown as SharedMemoryEngine,
+      {
+        indexMemories: vi.fn(async () => 0),
+      } as unknown as EmbeddingIndexerService,
+      {
+        beginObservationIdempotency: vi.fn(async () => ({
+          state: "claimed",
+        })),
+        recordObservationEvent: vi.fn(async () => ({
+          event,
+          inserted: true,
+        })),
+        completeObservationEvent: vi.fn(async (input) => ({
+          ...event,
+          payload: { response: input.response },
+        })),
+        completeObservationIdempotency: vi.fn(async () => undefined),
+        abandonIdempotency: vi.fn(async () => undefined),
+      } as unknown as PostgresPilotRepository,
+    );
+
+    await expect(
+      service.observeEvent(
+        {
+          ...request,
+          connector: "lore-opencode-plugin",
+          agent: "opencode",
+          eventId: "opencode-without-repository",
+          scope: {},
+          learningScope: {},
+        },
+        workspace,
+        "request-opencode-without-repository",
+      ),
+    ).resolves.toMatchObject({
+      memories: [],
+      created: 0,
+      duplicates: 0,
+    });
     expect(observe).not.toHaveBeenCalled();
   });
 

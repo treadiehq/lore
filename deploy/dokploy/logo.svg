@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title>Lore</title>
+  <rect width="128" height="128" rx="28" fill="#111827"/>
+  <path d="M37 28h18v55h36v17H37z" fill="#f9fafb"/>
+  <circle cx="89" cy="39" r="11" fill="#60a5fa"/>
+</svg>

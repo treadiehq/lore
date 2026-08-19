@@ -1,0 +1,239 @@
+{
+  "schemaVersion": 1,
+  "kind": "railway-dashboard-template-source-of-truth",
+  "canonicalVersion": "0.1.4",
+  "metadata": {
+    "name": "Lore",
+    "description": "One-click self-hosting for Lore with pgvector, the Lore API, and the Lore web dashboard.",
+    "category": "AI/ML",
+    "overviewFile": "deploy/railway/README.md",
+    "imageUrl": null,
+    "demoProjectId": null
+  },
+  "publication": {
+    "required": true,
+    "managedExternally": true,
+    "managementSurface": "Railway dashboard template composer",
+    "status": "external-publication-required",
+    "templateId": null,
+    "templateUrl": null
+  },
+  "railwayConfigAsCode": {
+    "apiPath": "/deploy/railway-api.json",
+    "webPath": "/deploy/railway-web.json",
+    "scope": "Source-repository deployments only",
+    "limitations": [
+      "Railway config-as-code configures one deployment's build and deploy settings; it does not define a multi-service template.",
+      "The Railway config-as-code schema has no field for a Docker image source or a Dockerfile target stage.",
+      "Do not add unrecognized image or target keys. Select the pinned image sources below in the Railway template composer."
+    ]
+  },
+  "services": [
+    {
+      "name": "pgvector",
+      "source": {
+        "type": "docker-image",
+        "image": "pgvector/pgvector:0.8.6-pg18"
+      },
+      "deploy": {
+        "startCommand": null,
+        "healthcheckPath": null,
+        "healthcheckReason": "Railway healthcheck paths are HTTP-only; this service is private PostgreSQL on TCP 5432.",
+        "restartPolicyType": "ON_FAILURE",
+        "restartPolicyMaxRetries": 10
+      },
+      "networking": {
+        "privateNetworking": true,
+        "privatePort": 5432,
+        "publicDomain": {
+          "enabled": false
+        }
+      },
+      "volume": {
+        "name": "pgvector-data",
+        "mountPath": "/var/lib/postgresql"
+      },
+      "variables": {
+        "POSTGRES_DB": {
+          "value": "lore",
+          "description": "Database created for Lore."
+        },
+        "POSTGRES_USER": {
+          "value": "lore",
+          "description": "Database role used by Lore."
+        },
+        "POSTGRES_PASSWORD": {
+          "value": "${{secret(64, \"abcdef0123456789\")}}",
+          "sensitive": true,
+          "description": "Template-generated, URL-safe 256-bit database password."
+        },
+        "DATABASE_URL": {
+          "value": "postgresql://${{POSTGRES_USER}}:${{POSTGRES_PASSWORD}}@${{RAILWAY_PRIVATE_DOMAIN}}:5432/${{POSTGRES_DB}}",
+          "sensitive": true,
+          "description": "Private PostgreSQL URL referenced by the API service."
+        }
+      }
+    },
+    {
+      "name": "api",
+      "source": {
+        "type": "docker-image",
+        "image": "ghcr.io/treadiehq/lore-api:0.1.4",
+        "canonical": true,
+        "provenance": ".github/workflows/container-images.yml target api"
+      },
+      "deploy": {
+        "startCommand": null,
+        "imageDefaultCommand": "node dist/main.js",
+        "preDeployCommand": "node node_modules/@lore-co/database/dist/migrate.js",
+        "healthcheckPath": "/health/ready",
+        "healthcheckTimeoutSeconds": 120,
+        "restartPolicyType": "ON_FAILURE",
+        "restartPolicyMaxRetries": 10
+      },
+      "networking": {
+        "privateNetworking": true,
+        "privatePort": 3001,
+        "publicDomain": {
+          "enabled": true,
+          "provider": "railway-generated",
+          "targetPort": 3001
+        }
+      },
+      "variables": {
+        "NODE_ENV": {
+          "value": "production",
+          "description": "Enables production validation and runtime behavior."
+        },
+        "PORT": {
+          "value": "3001",
+          "description": "Port Railway uses for routing and health checks."
+        },
+        "API_HOST": {
+          "value": "0.0.0.0",
+          "description": "Listen on every container interface."
+        },
+        "API_PORT": {
+          "value": "${{PORT}}",
+          "description": "Keeps the API listener aligned with Railway's service port."
+        },
+        "DATABASE_URL": {
+          "value": "${{pgvector.DATABASE_URL}}",
+          "sensitive": true,
+          "description": "Reference to the pgvector service's private connection URL."
+        },
+        "LORE_SERVER_VERSION": {
+          "value": "0.1.4",
+          "description": "Version reported by the pinned API image."
+        },
+        "LORE_WORKSPACE_TOKEN": {
+          "value": "${{secret(64, \"abcdef0123456789\")}}",
+          "sensitive": true,
+          "description": "Template-generated 256-bit connector credential."
+        },
+        "LORE_WORKSPACE_ORGANIZATION": {
+          "value": "self-hosted",
+          "description": "Stable organization scope for the bootstrapped workspace."
+        },
+        "LORE_WORKSPACE_NAME": {
+          "value": "Lore",
+          "description": "Display name for the bootstrapped workspace."
+        },
+        "AUTH_MODE": {
+          "value": "local_owner",
+          "description": "Enables account-free, single-owner authentication."
+        },
+        "LORE_OWNER_BOOTSTRAP_TOKEN": {
+          "value": "${{secret(64, \"abcdef0123456789\")}}",
+          "sensitive": true,
+          "description": "Separate template-generated 256-bit token used once at /setup; keep retrievable until the owner account is claimed."
+        },
+        "AUTH_WEB_ORIGIN": {
+          "value": "https://${{web.RAILWAY_PUBLIC_DOMAIN}}",
+          "description": "Exact generated HTTPS origin allowed for browser authentication."
+        },
+        "NUXT_ORIGIN": {
+          "value": "https://${{web.RAILWAY_PUBLIC_DOMAIN}}",
+          "description": "Exact generated HTTPS web origin allowed by API CORS validation."
+        }
+      }
+    },
+    {
+      "name": "web",
+      "source": {
+        "type": "docker-image",
+        "image": "ghcr.io/treadiehq/lore-web:0.1.4",
+        "canonical": true,
+        "provenance": ".github/workflows/container-images.yml target web"
+      },
+      "deploy": {
+        "startCommand": null,
+        "imageDefaultCommand": "node .output/server/index.mjs",
+        "preDeployCommand": null,
+        "healthcheckPath": "/health",
+        "healthcheckTimeoutSeconds": 120,
+        "restartPolicyType": "ON_FAILURE",
+        "restartPolicyMaxRetries": 10
+      },
+      "networking": {
+        "privateNetworking": true,
+        "privatePort": 3000,
+        "publicDomain": {
+          "enabled": true,
+          "provider": "railway-generated",
+          "targetPort": 3000
+        }
+      },
+      "variables": {
+        "NODE_ENV": {
+          "value": "production",
+          "description": "Enables production runtime behavior."
+        },
+        "PORT": {
+          "value": "3000",
+          "description": "Port Railway uses for routing and health checks."
+        },
+        "HOST": {
+          "value": "0.0.0.0",
+          "description": "Listen on every container interface."
+        },
+        "NITRO_HOST": {
+          "value": "${{HOST}}",
+          "description": "Keeps Nitro bound to Railway's container interface."
+        },
+        "NITRO_PORT": {
+          "value": "${{PORT}}",
+          "description": "Keeps Nitro aligned with Railway's service port."
+        },
+        "NUXT_LORE_API_URL": {
+          "value": "http://${{api.RAILWAY_PRIVATE_DOMAIN}}:${{api.PORT}}",
+          "description": "Private API URL used by the server-side web proxy."
+        },
+        "NUXT_PUBLIC_API_BASE_URL": {
+          "value": "/api/lore",
+          "description": "Browser API path proxied by the web service."
+        },
+        "NUXT_PUBLIC_LORE_CONNECTOR_API_URL": {
+          "value": "https://${{api.RAILWAY_PUBLIC_DOMAIN}}",
+          "description": "Generated public API HTTPS origin shown in connector setup."
+        },
+        "NUXT_AUTH_COOKIE_NAME": {
+          "value": "lore_session",
+          "description": "Dashboard session cookie name."
+        },
+        "NUXT_AUTH_COOKIE_SECURE": {
+          "value": "true",
+          "description": "Restricts the session cookie to HTTPS."
+        }
+      }
+    }
+  ],
+  "postDeploy": {
+    "setupPath": "/setup",
+    "instructions": [
+      "Open the Railway-generated web domain with /setup appended.",
+      "Copy LORE_OWNER_BOOTSTRAP_TOKEN from the API service variables and use it once to claim the owner account.",
+      "Keep pgvector private. Expose only the API and web generated domains."
+    ]
+  }
+}

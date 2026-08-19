@@ -3,9 +3,18 @@ import type {
   CorrectLearningInput,
   MemoryCategory,
   MemoryScope,
+  ProposalDetailResponse,
+  ReviewProposalInput,
   UpdateMemoryInput,
 } from "@lore-co/sdk";
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import {
+  computed,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  watch,
+} from "vue";
 import { onBeforeRouteLeave } from "vue-router";
 import {
   categoryLabel,
@@ -27,17 +36,45 @@ const memoryId = computed(() => {
   return Array.isArray(value) ? (value[0] ?? "") : (value ?? "");
 });
 
+async function fetchMemoryDetail(id: string) {
+  const basic = await client.getLearning(id);
+  if (basic.memory?.status === "proposed") {
+    const proposal = await client.getProposal(id);
+    return {
+      inspection: {
+        learning: proposal.memory,
+        sourceEvent: null,
+        provenance: [],
+        predecessor: null,
+        successor: null,
+      },
+      proposal,
+    };
+  }
+  return {
+    inspection: await client.inspectLearning(id),
+    proposal: null,
+  };
+}
+
 const {
-  data: response,
+  data: detailResponse,
   error,
   status: requestStatus,
   refresh,
 } = await useAsyncData(
   "memory-detail",
-  () => client.inspectLearning(memoryId.value),
-  { watch: [memoryId] },
+  () => fetchMemoryDetail(memoryId.value),
 );
 
+watch(memoryId, () => {
+  void refresh();
+});
+
+const response = computed(() => detailResponse.value?.inspection ?? null);
+const proposal = computed<ProposalDetailResponse | null>(
+  () => detailResponse.value?.proposal ?? null,
+);
 const memory = computed(() => response.value?.learning ?? null);
 const predecessor = computed(() => response.value?.predecessor ?? null);
 const successor = computed(() => response.value?.successor ?? null);
@@ -69,6 +106,14 @@ const correctionPending = ref(false);
 const correctionError = ref("");
 const archiveDialogOpen = ref(false);
 const archiving = ref(false);
+const reviewScopeMode = ref<"repository" | "organization">("repository");
+const reviewProjectDraft = ref("");
+const reviewRepoDraft = ref("");
+const reviewPathDraft = ref("");
+const reviewComponentDraft = ref("");
+const reviewReason = ref("");
+const reviewing = ref(false);
+const reviewError = ref("");
 
 function resetDrafts(): void {
   const value = memory.value;
@@ -81,6 +126,12 @@ function resetDrafts(): void {
   repoDraft.value = value.scope.repo ?? "";
   pathDraft.value = value.scope.path ?? "";
   componentDraft.value = value.scope.component ?? "";
+  reviewScopeMode.value =
+    value.scope.repo === undefined ? "organization" : "repository";
+  reviewProjectDraft.value = value.scope.project ?? "";
+  reviewRepoDraft.value = value.scope.repo ?? "";
+  reviewPathDraft.value = value.scope.path ?? "";
+  reviewComponentDraft.value = value.scope.component ?? "";
   saveError.value = "";
 }
 
@@ -95,6 +146,21 @@ const canCorrect = computed(
     (memory.value.status === "active" || memory.value.status === "suppressed"),
 );
 const canForget = canCorrect;
+const blockingConflict = computed(() =>
+  proposal.value?.conflicts.find(
+    (conflict) =>
+      conflict.severity === "blocking" && conflict.resolution === null,
+  ),
+);
+const conflictTargets = computed(
+  () =>
+    new Map(
+      (proposal.value?.conflictTargets ?? []).map((target) => [
+        target.id,
+        target,
+      ]),
+    ),
+);
 
 function editableScope(): MemoryScope {
   return {
@@ -286,11 +352,88 @@ async function correctMemory(): Promise<void> {
     correcting.value = false;
     toast.show("Correction saved. The previous learning remains in history.");
     await navigateTo(`/memories/${result.memory.id}`, { replace: true });
-    response.value = await client.inspectLearning(result.memory.id);
+    await nextTick();
+    detailResponse.value = await fetchMemoryDetail(result.memory.id);
   } catch (caught) {
     correctionError.value = errorMessage(caught);
   } finally {
     correctionPending.value = false;
+  }
+}
+
+function reviewedScope(): MemoryScope {
+  const organization = memory.value?.scope.organization;
+  if (reviewScopeMode.value === "organization") {
+    return organization === undefined ? {} : { organization };
+  }
+  return {
+    ...(organization === undefined ? {} : { organization }),
+    ...(reviewProjectDraft.value.trim() === ""
+      ? {}
+      : { project: reviewProjectDraft.value.trim() }),
+    ...(reviewRepoDraft.value.trim() === ""
+      ? {}
+      : { repo: reviewRepoDraft.value.trim() }),
+    ...(reviewPathDraft.value.trim() === ""
+      ? {}
+      : { path: reviewPathDraft.value.trim() }),
+    ...(reviewComponentDraft.value.trim() === ""
+      ? {}
+      : { component: reviewComponentDraft.value.trim() }),
+  };
+}
+
+async function resolveProposal(
+  action: "keep_existing" | "use_proposal" | "keep_both",
+): Promise<void> {
+  const current = proposal.value;
+  if (current === null || reviewReason.value.trim() === "") {
+    reviewError.value = "Add a review reason before resolving this proposal.";
+    return;
+  }
+  const input: ReviewProposalInput =
+    action === "keep_existing"
+      ? {
+          decision: "reject",
+          reason: reviewReason.value.trim(),
+        }
+      : action === "keep_both"
+        ? {
+            decision: "keep_both",
+            reason: reviewReason.value.trim(),
+            scope: reviewedScope(),
+          }
+        : blockingConflict.value === undefined
+          ? {
+              decision: "approve",
+              reason: reviewReason.value.trim(),
+              scope: reviewedScope(),
+            }
+          : {
+              decision: "use_proposal",
+              reason: reviewReason.value.trim(),
+              targetMemoryId: blockingConflict.value.targetMemoryId,
+              scope: reviewedScope(),
+            };
+  reviewing.value = true;
+  reviewError.value = "";
+  try {
+    const result = await client.reviewProposal(memoryId.value, input);
+    if (result.proposal.status === "deleted") {
+      toast.show("Kept the existing memory and rejected the proposal.");
+      await navigateTo("/memories?status=proposed");
+      return;
+    }
+    toast.show(
+      action === "keep_both"
+        ? "Both memories are now active."
+        : "The proposal is now active.",
+    );
+    await refresh();
+  } catch (caught) {
+    reviewError.value = errorMessage(caught, "learning");
+  } finally {
+    reviewing.value = false;
   }
 }
 
@@ -426,6 +569,200 @@ onBeforeRouteLeave(() => {
             </div>
           </div>
         </header>
+
+        <section
+          v-if="proposal"
+          class="mt-6 overflow-hidden rounded-[0.625rem] border border-lore-accent/40 bg-lore-surface"
+          aria-labelledby="proposal-review-heading"
+        >
+          <div class="border-b border-lore-border px-5 py-4">
+            <h2 id="proposal-review-heading" class="text-sm font-semibold text-lore-text">
+              Review proposal
+            </h2>
+            <p class="mt-1 text-xs leading-5 text-lore-text-secondary">
+              This statement is not retrievable or injectable until a reviewer
+              activates it.
+            </p>
+          </div>
+
+          <div class="space-y-6 p-5">
+            <section aria-labelledby="conflict-evidence-heading">
+              <div class="flex items-center justify-between gap-3">
+                <h3 id="conflict-evidence-heading" class="text-sm font-semibold text-lore-text">
+                  Conflict evidence
+                </h3>
+                <span class="text-xs text-lore-text-muted">
+                  {{ proposal.conflicts.length }}
+                  {{ proposal.conflicts.length === 1 ? "signal" : "signals" }}
+                </span>
+              </div>
+              <p
+                v-if="proposal.conflicts.length === 0"
+                class="mt-3 text-sm leading-6 text-lore-text-secondary"
+              >
+                No deterministic, lexical, semantic, or model-assisted conflict
+                signals were found.
+              </p>
+              <ul v-else class="mt-3 divide-y divide-lore-border border-y border-lore-border">
+                <li
+                  v-for="conflict in proposal.conflicts"
+                  :key="conflict.id"
+                  class="py-4"
+                >
+                  <div class="flex flex-wrap items-center gap-2">
+                    <span class="text-xs font-semibold capitalize text-lore-text">
+                      {{ conflict.detector }}
+                    </span>
+                    <span
+                      class="rounded border px-1.5 py-0.5 text-[0.625rem] font-medium uppercase tracking-wide"
+                      :class="
+                        conflict.severity === 'blocking'
+                          ? 'border-lore-danger/30 bg-lore-danger-soft text-lore-danger'
+                          : 'border-lore-warning/30 bg-lore-warning-soft text-lore-warning'
+                      "
+                    >
+                      {{ conflict.severity }}
+                    </span>
+                  </div>
+                  <p class="mt-2 text-sm leading-6 text-lore-text-secondary">
+                    {{ conflict.evidence.summary }}
+                  </p>
+                  <div
+                    v-if="conflictTargets.get(conflict.targetMemoryId)"
+                    class="mt-3 rounded-md border border-lore-border bg-lore-raised p-3"
+                  >
+                    <p class="lore-section-label">Existing memory</p>
+                    <NuxtLink
+                      :to="`/memories/${conflict.targetMemoryId}`"
+                      class="lore-link mt-1 block text-sm leading-6"
+                    >
+                      {{ conflictTargets.get(conflict.targetMemoryId)?.content }}
+                    </NuxtLink>
+                  </div>
+                </li>
+              </ul>
+            </section>
+
+            <fieldset class="border-t border-lore-border pt-5">
+              <legend class="text-sm font-semibold text-lore-text">
+                Activation scope
+              </legend>
+              <p class="mt-1 text-xs leading-5 text-lore-text-muted">
+                Keep repository scope, edit it, or promote this proposal to the
+                organization before activation.
+              </p>
+              <div class="mt-4 flex flex-wrap gap-4">
+                <label class="flex items-center gap-2 text-sm text-lore-text-secondary">
+                  <input
+                    v-model="reviewScopeMode"
+                    type="radio"
+                    value="repository"
+                    :disabled="reviewing"
+                  >
+                  Repository scope
+                </label>
+                <label class="flex items-center gap-2 text-sm text-lore-text-secondary">
+                  <input
+                    v-model="reviewScopeMode"
+                    type="radio"
+                    value="organization"
+                    :disabled="reviewing"
+                  >
+                  Promote organization-wide
+                </label>
+              </div>
+              <div
+                v-if="reviewScopeMode === 'repository'"
+                class="mt-4 grid gap-4 sm:grid-cols-2"
+              >
+                <UiField label="Project" for="proposal-project">
+                  <input
+                    id="proposal-project"
+                    v-model="reviewProjectDraft"
+                    class="lore-input"
+                    :disabled="reviewing"
+                  >
+                </UiField>
+                <UiField label="Repository" for="proposal-repo">
+                  <input
+                    id="proposal-repo"
+                    v-model="reviewRepoDraft"
+                    class="lore-input"
+                    :disabled="reviewing"
+                  >
+                </UiField>
+                <UiField label="Path" for="proposal-path">
+                  <input
+                    id="proposal-path"
+                    v-model="reviewPathDraft"
+                    class="lore-input"
+                    :disabled="reviewing"
+                  >
+                </UiField>
+                <UiField label="Component" for="proposal-component">
+                  <input
+                    id="proposal-component"
+                    v-model="reviewComponentDraft"
+                    class="lore-input"
+                    :disabled="reviewing"
+                  >
+                </UiField>
+              </div>
+              <p
+                v-else
+                class="mt-4 rounded-md border border-lore-warning/30 bg-lore-warning-soft p-3 text-xs leading-5 text-lore-text-secondary"
+              >
+                Promotion makes the statement eligible across repositories in
+                {{ memory.scope.organization ?? "this workspace" }} after activation.
+              </p>
+            </fieldset>
+
+            <UiField label="Review reason" for="proposal-review-reason" required>
+              <textarea
+                id="proposal-review-reason"
+                v-model="reviewReason"
+                rows="3"
+                class="lore-textarea resize-y"
+                required
+                :disabled="reviewing"
+                placeholder="Explain why this resolution is correct."
+              />
+            </UiField>
+
+            <UiInlineAlert
+              v-if="reviewError"
+              title="Proposal wasn’t resolved"
+              :message="reviewError"
+            />
+          </div>
+
+          <div class="flex flex-col gap-2 border-t border-lore-border px-5 py-4 sm:flex-row sm:justify-end">
+            <button
+              type="button"
+              class="lore-button-secondary"
+              :disabled="reviewing"
+              @click="resolveProposal('keep_existing')"
+            >
+              Keep existing
+            </button>
+            <button
+              type="button"
+              class="lore-button-primary"
+              :disabled="reviewing"
+              @click="resolveProposal('use_proposal')"
+            >
+              Use proposal
+            </button>
+            <button
+              type="button"
+              class="lore-button-secondary"
+              :disabled="reviewing"
+              @click="resolveProposal('keep_both')"
+            >
+              Keep both
+            </button>
+          </div>
+        </section>
 
         <form
           v-if="correcting"

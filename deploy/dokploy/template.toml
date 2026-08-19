@@ -1,0 +1,28 @@
+[variables]
+web_domain = "${domain}"
+api_domain = "${domain}"
+postgres_password = "${hash:64}"
+workspace_token = "${hash:64}"
+owner_bootstrap_token = "${hash:64}"
+
+[config]
+env = [
+  "POSTGRES_PASSWORD=${postgres_password}",
+  "WEB_ORIGIN=https://${web_domain}",
+  "API_ORIGIN=https://${api_domain}",
+  "LORE_WORKSPACE_TOKEN=${workspace_token}",
+  "LORE_OWNER_BOOTSTRAP_TOKEN=${owner_bootstrap_token}",
+  "LORE_WORKSPACE_ORGANIZATION=local",
+  "LORE_WORKSPACE_NAME=Lore",
+]
+mounts = []
+
+[[config.domains]]
+serviceName = "web"
+port = 3_000
+host = "${web_domain}"
+
+[[config.domains]]
+serviceName = "api"
+port = 3_001
+host = "${api_domain}"

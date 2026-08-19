@@ -1,0 +1,87 @@
+name: Self-host acceptance
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  containers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      LORE_IMAGE_TAG: 0.1.4
+      LORE_API_IMAGE: lore-api
+      LORE_WEB_IMAGE: lore-web
+      POSTGRES_PASSWORD: ci-postgres-placeholder
+      LORE_WORKSPACE_TOKEN: lore_ci_workspace_token_placeholder_000000000000
+      LORE_WORKSPACE_ORGANIZATION: ci
+      LORE_WORKSPACE_NAME: CI
+      AUTH_MODE: local_owner
+      AUTH_EMAIL_MODE: disabled
+      AUTH_WEB_ORIGIN: http://127.0.0.1:3000
+      NUXT_ORIGIN: http://127.0.0.1:3000
+      LORE_OWNER_BOOTSTRAP_TOKEN: 0000000000000000000000000000000000000000000000000000000000000000
+      NUXT_AUTH_COOKIE_SECURE: "false"
+      NUXT_PUBLIC_LORE_CONNECTOR_API_URL: http://127.0.0.1:3001
+      LORE_SERVER_REVISION: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Validate deployment assets
+        run: pnpm test:deploy-assets
+
+      - name: Build canonical images
+        run: |
+          docker build --target api --tag "lore-api:${LORE_IMAGE_TAG}" -f deploy/Dockerfile .
+          docker build --target web --tag "lore-web:${LORE_IMAGE_TAG}" -f deploy/Dockerfile .
+
+      - name: Start production topology
+        run: docker compose -f docker-compose.yml up -d --wait
+
+      - name: Verify deployed application
+        env:
+          LORE_API_URL: http://127.0.0.1:3001
+          LORE_WEB_URL: http://127.0.0.1:3000
+        run: >-
+          pnpm test:deployment-smoke --
+          --expected-version "${LORE_IMAGE_TAG}"
+          --expected-revision "${GITHUB_SHA}"
+          --write-canary
+
+      - name: Verify migration replay and service recreation
+        run: |
+          docker compose -f docker-compose.yml run --rm migrate
+          docker compose -f docker-compose.yml up -d --wait --force-recreate api web
+
+      - name: Verify application after replay
+        env:
+          LORE_API_URL: http://127.0.0.1:3001
+          LORE_WEB_URL: http://127.0.0.1:3000
+        run: >-
+          pnpm test:deployment-smoke --
+          --expected-version "${LORE_IMAGE_TAG}"
+          --expected-revision "${GITHUB_SHA}"
+
+      - name: Show service logs
+        if: failure()
+        run: docker compose -f docker-compose.yml logs --no-color
+
+      - name: Stop production topology
+        if: always()
+        run: docker compose -f docker-compose.yml down --volumes --remove-orphans

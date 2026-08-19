@@ -6,6 +6,8 @@ import { promisify } from "node:util";
 import {
   closeDatabase,
   createDatabase,
+  hashAuthToken,
+  PostgresAuthRepository,
   PostgresMemoryRepository,
   PostgresPilotRepository,
   type DatabaseConnection,
@@ -82,6 +84,11 @@ describe.skipIf(!databaseTestsEnabled)(
     beforeEach(async () => {
       await connection.client`
         TRUNCATE TABLE
+          auth_password_resets,
+          auth_owner_bootstraps,
+          auth_sessions,
+          auth_magic_links,
+          auth_users,
           memory_provenance,
           connector_events,
           workspace_tokens,
@@ -120,6 +127,7 @@ describe.skipIf(!databaseTestsEnabled)(
       const interaction = {
         agent: "claude",
         workspaceId: workspace.workspaceId,
+        organization: workspace.organization,
         repo: "payments",
         sessionId: "postgres-session",
         messages: [
@@ -134,13 +142,47 @@ describe.skipIf(!databaseTestsEnabled)(
 
       const first = await engine.observe(interaction);
       const duplicate = await engine.observe(interaction);
-      expect(first).toMatchObject({ created: 1, duplicates: 0 });
+      expect(first).toMatchObject({
+        created: 1,
+        duplicates: 0,
+        memories: [{ status: "proposed" }],
+      });
       expect(first.memories[0]?.source).toMatchObject({
         agent: "claude",
         sessionId: "postgres-session",
         messageId: "postgres-message",
       });
       expect(duplicate).toMatchObject({ created: 0, duplicates: 1 });
+      await expect(
+        engine.getContext(
+          {
+            agent: "codex",
+            organization: workspace.organization,
+            repo: "payments",
+            task: "Review Stripe API handler access through BillingService",
+            symbols: ["Stripe", "BillingService"],
+          },
+          { workspaceId: workspace.workspaceId },
+        ),
+      ).resolves.toMatchObject({ memories: [] });
+      await expect(
+        engine.reviewProposal(
+          {
+            proposalMemoryId: first.memories[0]!.id,
+            decision: "approve",
+            reviewerId: "integration-reviewer",
+            reason: "The convention is durable.",
+            scope: { organization: workspace.organization },
+          },
+          { workspaceId: workspace.workspaceId },
+        ),
+      ).resolves.toMatchObject({
+        proposal: {
+          status: "active",
+          scope: { organization: workspace.organization },
+        },
+        metadata: { decision: "approve" },
+      });
 
       const correction = await engine.correct({
         memoryId: first.memories[0]!.id,
@@ -153,6 +195,7 @@ describe.skipIf(!databaseTestsEnabled)(
 
       const context = await engine.getContext({
         agent: "codex",
+        organization: workspace.organization,
         repo: "payments",
         task: "Review Stripe API handler access",
         symbols: ["BillingGateway"],
@@ -184,6 +227,241 @@ describe.skipIf(!databaseTestsEnabled)(
         path: "integration",
         component: "testing",
       });
+    });
+
+    it("atomically claims the first owner and consumes password resets once", async () => {
+      const workspace = await new PostgresPilotRepository(
+        connection,
+      ).ensureWorkspaceToken({
+        organization: "local-owner-integration",
+        workspaceName: "Local Owner Integration",
+        token: "local-owner-integration-token-000001",
+      });
+      const repository = new PostgresAuthRepository(connection);
+      const expiresAt = new Date(Date.now() + 60_000);
+      const claims = await Promise.all([
+        repository.claimFirstOwner({
+          organization: workspace.organization,
+          email: "first-owner@example.com",
+          passwordHash: "$argon2id$integration-first",
+          sessionId: "11111111-1111-4111-8111-111111111111",
+          sessionTokenHash: hashAuthToken("a".repeat(43)),
+          sessionExpiresAt: expiresAt,
+        }),
+        repository.claimFirstOwner({
+          organization: workspace.organization,
+          email: "second-owner@example.com",
+          passwordHash: "$argon2id$integration-second",
+          sessionId: "22222222-2222-4222-8222-222222222222",
+          sessionTokenHash: hashAuthToken("b".repeat(43)),
+          sessionExpiresAt: expiresAt,
+        }),
+      ]);
+      const successfulClaims = claims.filter(
+        (claim): claim is NonNullable<typeof claim> => claim !== null,
+      );
+      expect(successfulClaims).toHaveLength(1);
+      expect(successfulClaims[0]).toMatchObject({ role: "owner" });
+      await expect(
+        repository.isOwnerBootstrapRequired(workspace.organization),
+      ).resolves.toBe(false);
+      await expect(
+        repository.claimFirstOwner({
+          organization: workspace.organization,
+          email: "replay@example.com",
+          passwordHash: "$argon2id$integration-replay",
+          sessionId: "33333333-3333-4333-8333-333333333333",
+          sessionTokenHash: hashAuthToken("c".repeat(43)),
+          sessionExpiresAt: expiresAt,
+        }),
+      ).resolves.toBeNull();
+
+      const owner = successfulClaims[0]!;
+      const resetToken = "d".repeat(43);
+      await expect(
+        repository.issuePasswordReset({
+          id: "44444444-4444-4444-8444-444444444444",
+          email: owner.email,
+          organization: workspace.organization,
+          tokenHash: hashAuthToken(resetToken),
+          expiresAt,
+        }),
+      ).resolves.toBe(true);
+      await expect(
+        repository.consumePasswordReset({
+          tokenHash: hashAuthToken(resetToken),
+          passwordHash: "$argon2id$integration-replacement",
+          sessionId: "55555555-5555-4555-8555-555555555555",
+          sessionTokenHash: hashAuthToken("e".repeat(43)),
+          sessionExpiresAt: expiresAt,
+        }),
+      ).resolves.toMatchObject({ email: owner.email, role: "owner" });
+      await expect(
+        repository.consumePasswordReset({
+          tokenHash: hashAuthToken(resetToken),
+          passwordHash: "$argon2id$integration-replayed",
+          sessionId: "66666666-6666-4666-8666-666666666666",
+          sessionTokenHash: hashAuthToken("f".repeat(43)),
+          sessionExpiresAt: expiresAt,
+        }),
+      ).resolves.toBeNull();
+
+      const expiringToken = "g".repeat(43);
+      await repository.issuePasswordReset({
+        id: "77777777-7777-4777-8777-777777777777",
+        email: owner.email,
+        organization: workspace.organization,
+        tokenHash: hashAuthToken(expiringToken),
+        expiresAt: new Date(Date.now() + 200),
+      });
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
+      await expect(
+        repository.consumePasswordReset({
+          tokenHash: hashAuthToken(expiringToken),
+          passwordHash: "$argon2id$integration-expired",
+          sessionId: "88888888-8888-4888-8888-888888888888",
+          sessionTokenHash: hashAuthToken("h".repeat(43)),
+          sessionExpiresAt: expiresAt,
+        }),
+      ).resolves.toBeNull();
+    });
+
+    it("persists governed policy and resolves deterministic proposals once", async () => {
+      const workspace = await new PostgresPilotRepository(
+        connection,
+      ).ensureWorkspaceToken({
+        organization: "governed-integration",
+        token: "governed-integration-token-00000001",
+      });
+      const repository = new PostgresMemoryRepository(connection);
+      const engine = new SharedMemoryEngine({
+        repository,
+        extractor: new HeuristicMemoryExtractor(),
+        retriever: new ScopedKeywordMemoryRetriever(repository),
+      });
+
+      await expect(
+        engine.getWorkspaceLearningPolicy(workspace.workspaceId),
+      ).resolves.toMatchObject({
+        learningMode: "trust_tiered",
+        llmConflictAnalysisEnabled: false,
+      });
+      await engine.updateWorkspaceLearningPolicy(workspace.workspaceId, {
+        learningMode: "proposal_only",
+        llmConflictAnalysisEnabled: true,
+      });
+      await expect(
+        new PostgresMemoryRepository(
+          connection,
+        ).getWorkspaceLearningPolicy(workspace.workspaceId),
+      ).resolves.toMatchObject({
+        learningMode: "proposal_only",
+        llmConflictAnalysisEnabled: true,
+      });
+
+      const original = await engine.remember({
+        content: "RepositoryFactory handles account persistence.",
+        scope: { repo: "accounts" },
+        category: "architecture",
+        source: {
+          agent: "human",
+          workspaceId: workspace.workspaceId,
+        },
+      });
+      const observed = await engine.observe({
+        agent: "codex",
+        workspaceId: workspace.workspaceId,
+        repo: "accounts",
+        messages: [
+          {
+            role: "assistant",
+            content: "RepositoryFactory handles account persistence.",
+          },
+          {
+            role: "user",
+            content:
+              "No, RepositoryFactory is deprecated. Use AccountStore instead.",
+          },
+        ],
+      });
+      const proposal = observed.memories[0]!;
+      expect(proposal).toMatchObject({
+        status: "proposed",
+        supersedesMemoryId: original.memory.id,
+      });
+      await expect(
+        repository.insert({
+          ...proposal,
+          id: "77777777-7777-4777-8777-777777777777",
+          status: "active",
+        }),
+      ).resolves.toMatchObject({
+        inserted: false,
+        memory: { id: proposal.id, status: "proposed" },
+      });
+      await expect(
+        repository.listNeedingEmbedding({
+          model: "integration-embedding",
+          limit: 100,
+        }),
+      ).resolves.not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: proposal.id })]),
+      );
+
+      const decisions = await Promise.allSettled([
+        engine.reviewProposal(
+          {
+            proposalMemoryId: proposal.id,
+            decision: "use_proposal",
+            targetMemoryId: original.memory.id,
+            reviewerId: "integration-reviewer",
+            reason: "Use the explicit correction.",
+          },
+          { workspaceId: workspace.workspaceId },
+        ),
+        engine.reviewProposal(
+          {
+            proposalMemoryId: proposal.id,
+            decision: "reject",
+            reviewerId: "concurrent-reviewer",
+            reason: "Concurrent decision.",
+          },
+          { workspaceId: workspace.workspaceId },
+        ),
+      ]);
+      expect(
+        decisions.filter(({ status }) => status === "fulfilled"),
+      ).toHaveLength(1);
+      expect(
+        decisions.filter(({ status }) => status === "rejected"),
+      ).toHaveLength(1);
+      await expect(
+        engine.getProposal(proposal.id, {
+          workspaceId: workspace.workspaceId,
+        }),
+      ).resolves.toMatchObject({
+        memory: {
+          status: "active",
+          supersedesMemoryId: original.memory.id,
+        },
+        metadata: {
+          decision: "use_proposal",
+          reviewerId: "integration-reviewer",
+          decisionTargetMemoryId: original.memory.id,
+        },
+        conflicts: expect.arrayContaining([
+          expect.objectContaining({
+            detector: "deterministic",
+            severity: "blocking",
+            resolution: "use_proposal",
+          }),
+        ]),
+      });
+      await expect(
+        engine.getMemory(original.memory.id, {
+          workspaceId: workspace.workspaceId,
+        }),
+      ).resolves.toMatchObject({ memory: { status: "superseded" } });
     });
 
     it("treats path scope wildcard characters literally", async () => {
@@ -665,7 +943,7 @@ describe.skipIf(!databaseTestsEnabled)(
       expect(contextBody.packing.includedMemoryIds).not.toHaveLength(0);
       expect(contextBody.event.type).toBe("context_delivery");
       expect(contextBody.receipt.querySha256).toMatch(/^[a-f0-9]{64}$/u);
-      expect(contextBody.receipt.retrievalPolicyVersion).toBe("precision-v1");
+      expect(contextBody.receipt.retrievalPolicyVersion).toBe("precision-v2");
       expect(contextBody.receipt.hits[0]?.content).toContain("AccountStore");
 
       const activity = await fetch(`${baseUrl}/v1/activity`, {
@@ -858,9 +1136,14 @@ describe.skipIf(!databaseTestsEnabled)(
           learningScope: { repo: "accounts" },
           messages: [
             {
+              role: "assistant",
+              id: "inspection-api-assistant",
+              content: "Write account records using the current repository.",
+            },
+            {
               role: "user",
               id: "inspection-api-message",
-              content: "Always use AccountStore for account writes.",
+              content: "No, always use AccountStore for account writes.",
             },
           ],
           occurredAt: "2026-08-13T12:00:00.000Z",

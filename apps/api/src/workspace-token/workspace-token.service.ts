@@ -25,10 +25,11 @@ function requireDashboardSession(
 ): AuthenticatedWorkspace & { credentialType: "session"; userId: string } {
   if (
     workspace.credentialType !== "session" ||
-    workspace.userId === undefined
+    workspace.userId === undefined ||
+    workspace.role !== "owner"
   ) {
     throw new ForbiddenException(
-      "A dashboard session is required to manage workspace tokens",
+      "A workspace owner session is required to manage workspace tokens",
     );
   }
   return workspace as AuthenticatedWorkspace & {

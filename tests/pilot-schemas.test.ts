@@ -6,7 +6,7 @@ import {
 } from "@lore-co/core";
 
 describe("paired-turn scopes", () => {
-  it("keeps task relevance scope separate from workspace learning scope", () => {
+  it("keeps task path evidence separate from repository learning context", () => {
     const parsed = PairedTurnRequestSchema.parse({
       connector: "lore-cli",
       eventId: "event-1",
@@ -15,14 +15,14 @@ describe("paired-turn scopes", () => {
       previousAssistant: "Use RepositoryFactory.",
       currentUser: "Use AccountStore instead.",
       scope: { repo: "acme/accounts", path: "src/accounts" },
-      learningScope: {},
+      learningScope: { repo: "acme/accounts" },
     });
 
     expect(parsed.scope).toEqual({
       repo: "acme/accounts",
       path: "src/accounts",
     });
-    expect(parsed.learningScope).toEqual({});
+    expect(parsed.learningScope).toEqual({ repo: "acme/accounts" });
   });
 });
 

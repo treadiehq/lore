@@ -8,6 +8,7 @@ import {
   Post,
   Query,
   Req,
+  UseGuards,
 } from "@nestjs/common";
 import type {
   ForgetMemoryResponse,
@@ -16,7 +17,9 @@ import type {
   ListMemoriesDto,
   ListMemoriesResponse,
   MemoryUpdate,
+  ProposalDetailResponse,
   RememberResponse,
+  ReviewProposalResponse,
   UpdateMemoryResponse,
 } from "@lore-co/core";
 import {
@@ -24,10 +27,12 @@ import {
   CreateMemoryBodySchema,
   ListMemoriesQuerySchema,
   MemoryIdParamsSchema,
+  ReviewProposalBodySchema,
   UpdateMemoryBodySchema,
   correctionInput,
 } from "../common/request-schemas.js";
 import { ZodValidationPipe } from "../common/zod-validation.pipe.js";
+import { SessionAuthGuard } from "../common/session-auth.guard.js";
 import {
   requireWorkspace,
   type WorkspaceHttpRequest,
@@ -67,6 +72,32 @@ export class MemoryController {
     @Req() request: WorkspaceHttpRequest,
   ): Promise<LearningInspectionResponse> {
     return this.#service.inspect(params.id, requireWorkspace(request));
+  }
+
+  @UseGuards(SessionAuthGuard)
+  @Get(":id/proposal")
+  getProposal(
+    @Param(new ZodValidationPipe(MemoryIdParamsSchema))
+    params: { id: string },
+    @Req() request: WorkspaceHttpRequest,
+  ): Promise<ProposalDetailResponse> {
+    return this.#service.getProposal(params.id, requireWorkspace(request));
+  }
+
+  @UseGuards(SessionAuthGuard)
+  @Post(":id/review")
+  reviewProposal(
+    @Param(new ZodValidationPipe(MemoryIdParamsSchema))
+    params: { id: string },
+    @Body(new ZodValidationPipe(ReviewProposalBodySchema))
+    body: ReturnType<typeof ReviewProposalBodySchema.parse>,
+    @Req() request: WorkspaceHttpRequest,
+  ): Promise<ReviewProposalResponse> {
+    return this.#service.reviewProposal(
+      params.id,
+      body,
+      requireWorkspace(request),
+    );
   }
 
   @Get(":id")

@@ -1,5 +1,7 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import {
+  HttpException,
+  HttpStatus,
   Inject,
   Injectable,
   NotFoundException,
@@ -9,62 +11,70 @@ import {
 import {
   AuthInitiationResponseSchema,
   AuthLoginRequestSchema,
+  AuthPublicConfigResponseSchema,
   AuthSessionProfileSchema,
   AuthSessionResponseSchema,
   AuthSignupRequestSchema,
   AuthTokenSchema,
+  AuthenticatedSessionResponseSchema,
   AuthVerifyRequestSchema,
-  AuthVerifyResponseSchema,
+  LocalOwnerBootstrapClaimRequestSchema,
+  LocalOwnerLoginRequestSchema,
+  PasswordChangeRequestSchema,
+  PasswordChangeResponseSchema,
+  PasswordResetConsumeRequestSchema,
+  type AuthenticatedSessionResponse,
   type AuthenticatedWorkspace,
   type AuthInitiationResponse,
   type AuthLoginRequest,
+  type AuthPublicConfigResponse,
   type AuthSessionProfile,
   type AuthSessionResponse,
   type AuthSignupRequest,
   type AuthVerifyRequest,
   type AuthVerifyResponse,
+  type LocalOwnerBootstrapClaimRequest,
+  type LocalOwnerLoginRequest,
+  type PasswordChangeRequest,
+  type PasswordChangeResponse,
+  type PasswordResetConsumeRequest,
 } from "@lore-co/core";
 import {
   hashAuthToken,
   type AuthUserRecord,
   type PostgresAuthRepository,
 } from "@lore-co/database";
+import { hash, verify } from "@node-rs/argon2";
 import {
   apiDeploymentConfig,
-  type AuthEmailConfig,
+  type AuthConfig,
 } from "../common/deployment-config.js";
 import { AUTH_REPOSITORY } from "../common/tokens.js";
 
 const INITIATION_LIMIT = 5;
-const INITIATION_WINDOW_MS = 15 * 60 * 1_000;
-const DEFAULT_SESSION_TTL_DAYS = 30;
+const AUTH_ATTEMPT_LIMIT = 5;
+const AUTH_ATTEMPT_WINDOW_MS = 15 * 60 * 1_000;
+const MAX_RATE_WINDOWS = 10_000;
+const ARGON2_OPTIONS = {
+  algorithm: 2,
+  memoryCost: 65_536,
+  timeCost: 3,
+  parallelism: 1,
+} as const;
 
-interface InitiationWindow {
+interface RateWindow {
   startedAt: number;
   count: number;
 }
 
-type EnabledAuthEmailConfig = Exclude<AuthEmailConfig, { mode: "disabled" }>;
-
-function sessionTtlMs(): number {
-  const raw = process.env.AUTH_SESSION_TTL_DAYS?.trim();
-  if (raw === undefined || raw === "") {
-    return DEFAULT_SESSION_TTL_DAYS * 24 * 60 * 60 * 1_000;
-  }
-  const days = Number(raw);
-  if (!Number.isInteger(days) || days < 1 || days > 365) {
-    throw new Error(
-      "AUTH_SESSION_TTL_DAYS must be an integer from 1 to 365",
-    );
-  }
-  return days * 24 * 60 * 60 * 1_000;
-}
+type MagicLinkConfig = Extract<AuthConfig, { mode: "magic_link" }>;
+type LocalOwnerConfig = Extract<AuthConfig, { mode: "local_owner" }>;
 
 function acceptedResponse(): AuthInitiationResponse {
   return AuthInitiationResponseSchema.parse({ accepted: true });
 }
 
-function createOpaqueToken(): string {
+export function createOpaqueAuthToken(): string {
   return AuthTokenSchema.parse(randomBytes(32).toString("base64url"));
 }
 
@@ -77,39 +87,51 @@ function htmlEscape(value: string): string {
     .replaceAll("'", "&#39;");
 }
 
+function secretMatches(candidate: string, expected: string): boolean {
+  const candidateHash = createHash("sha256").update(candidate, "utf8").digest();
+  const expectedHash = createHash("sha256").update(expected, "utf8").digest();
+  return timingSafeEqual(candidateHash, expectedHash);
+}
+
 @Injectable()
 export class AuthService {
   readonly #repository: PostgresAuthRepository;
-  readonly #emailConfig: AuthEmailConfig;
-  readonly #sessionTtlMs: number;
+  readonly #config: AuthConfig;
   readonly #bootstrapOrganization: string | undefined;
-  readonly #initiationWindows = new Map<string, InitiationWindow>();
+  readonly #rateWindows = new Map<string, RateWindow>();
 
   constructor(
     @Inject(AUTH_REPOSITORY) repository: PostgresAuthRepository,
   ) {
     this.#repository = repository;
-    this.#emailConfig = apiDeploymentConfig().auth;
-    this.#sessionTtlMs = sessionTtlMs();
+    const deployment = apiDeploymentConfig();
+    this.#config = deployment.auth;
     this.#bootstrapOrganization =
-      process.env.LORE_WORKSPACE_ORGANIZATION?.trim() || undefined;
+      deployment.workspaceBootstrap?.organization;
   }
 
   assertEnabled(): void {
-    this.#enabledEmailConfig();
-  }
-
-  #enabledEmailConfig(): EnabledAuthEmailConfig {
-    if (this.#emailConfig.mode === "disabled") {
+    if (this.#config.mode === "disabled") {
       throw new NotFoundException("Not Found");
     }
-    return this.#emailConfig;
+  }
+
+  async publicConfig(): Promise<AuthPublicConfigResponse> {
+    if (this.#config.mode !== "local_owner") {
+      return AuthPublicConfigResponseSchema.parse({ mode: this.#config.mode });
+    }
+    return AuthPublicConfigResponseSchema.parse({
+      mode: this.#config.mode,
+      bootstrapRequired: await this.#repository.isOwnerBootstrapRequired(
+        this.#requiredBootstrapOrganization(),
+      ),
+    });
   }
 
   async signup(input: AuthSignupRequest): Promise<AuthInitiationResponse> {
-    this.assertEnabled();
+    const config = this.#magicLinkConfig();
     const signup = AuthSignupRequestSchema.parse(input);
-    if (!this.#allowInitiation(signup.email)) {
+    if (!this.#allowAttempt(`magic:${signup.email}`, INITIATION_LIMIT)) {
       return acceptedResponse();
     }
 
@@ -118,42 +140,181 @@ export class AuthService {
         ? {}
         : { bootstrapOrganization: this.#bootstrapOrganization }),
     });
-    if (!this.#canInitiate(provisioned.user)) {
+    if (!this.#canAuthenticate(provisioned.user)) {
       return acceptedResponse();
     }
-    await this.#issueMagicLink(provisioned.user, provisioned.created);
+    await this.#issueMagicLink(config, provisioned.user, provisioned.created);
     return acceptedResponse();
   }
 
   async login(input: AuthLoginRequest): Promise<AuthInitiationResponse> {
-    this.assertEnabled();
+    const config = this.#magicLinkConfig();
     const login = AuthLoginRequestSchema.parse(input);
-    if (!this.#allowInitiation(login.email)) {
+    if (!this.#allowAttempt(`magic:${login.email}`, INITIATION_LIMIT)) {
       return acceptedResponse();
     }
 
     const user = await this.#repository.findUserByEmail(login.email);
-    if (user === null || !this.#canInitiate(user)) {
+    if (user === null || !this.#canAuthenticate(user)) {
       return acceptedResponse();
     }
-    await this.#issueMagicLink(user, false);
+    await this.#issueMagicLink(config, user, false);
     return acceptedResponse();
   }
 
   async verify(input: AuthVerifyRequest): Promise<AuthVerifyResponse> {
-    this.assertEnabled();
+    const config = this.#magicLinkConfig();
     const verification = AuthVerifyRequestSchema.parse(input);
-    const sessionToken = createOpaqueToken();
-    const session = await this.#repository.verifyMagicLink({
-      tokenHash: hashAuthToken(verification.token),
-      sessionId: randomUUID(),
-      sessionTokenHash: hashAuthToken(sessionToken),
-      sessionExpiresAt: new Date(Date.now() + this.#sessionTtlMs),
-    });
-    if (session === null) {
+    const authenticated = await this.#verifyMagicLink(
+      verification.token,
+      config.sessionTtlMs,
+    );
+    if (authenticated === null) {
       throw new UnauthorizedException("Invalid or expired magic link");
     }
-    return AuthVerifyResponseSchema.parse({ sessionToken, session });
+    return authenticated;
+  }
+
+  async claimLocalOwner(
+    input: LocalOwnerBootstrapClaimRequest,
+    bootstrapToken: string,
+    clientKey: string,
+  ): Promise<AuthenticatedSessionResponse> {
+    const config = this.#localOwnerConfig();
+    const claim = LocalOwnerBootstrapClaimRequestSchema.parse(input);
+    if (
+      !this.#allowAttempt(`bootstrap-client:${clientKey}`) ||
+      !this.#allowAttempt("bootstrap-global", AUTH_ATTEMPT_LIMIT * 4) ||
+      !secretMatches(bootstrapToken, config.ownerBootstrapToken)
+    ) {
+      throw new UnauthorizedException("Bootstrap claim is unavailable");
+    }
+
+    const passwordHash = await this.#hashPassword(claim.password);
+    const session = this.#newSession(config.sessionTtlMs);
+    const profile = await this.#repository.claimFirstOwner({
+      organization: this.#requiredBootstrapOrganization(),
+      email: claim.email,
+      passwordHash,
+      ...session.repositoryInput,
+    });
+    if (profile === null) {
+      throw new UnauthorizedException("Bootstrap claim is unavailable");
+    }
+    return AuthenticatedSessionResponseSchema.parse({
+      sessionToken: session.token,
+      session: profile,
+    });
+  }
+
+  async passwordLogin(
+    input: LocalOwnerLoginRequest,
+    clientKey: string,
+  ): Promise<AuthenticatedSessionResponse> {
+    const config = this.#localOwnerConfig();
+    const login = LocalOwnerLoginRequestSchema.parse(input);
+    if (!this.#allowAttempt(`password:${clientKey}:${login.email}`)) {
+      throw new HttpException(
+        "Too many authentication attempts",
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+
+    const user = await this.#repository.findUserByEmail(login.email);
+    let passwordMatches = false;
+    if (user?.passwordHash === null || user === null) {
+      await this.#hashPassword(login.password);
+    } else {
+      passwordMatches = await this.#verifyPassword(
+        user.passwordHash,
+        login.password,
+      );
+    }
+    const valid =
+      user !== null &&
+      user.organization === this.#requiredBootstrapOrganization() &&
+      this.#canAuthenticate(user) &&
+      passwordMatches;
+    if (!valid || user === null) {
+      throw new UnauthorizedException("Invalid email or password");
+    }
+
+    const session = this.#newSession(config.sessionTtlMs);
+    const profile = await this.#repository.createSessionForUser({
+      userId: user.userId,
+      ...session.repositoryInput,
+    });
+    if (profile === null) {
+      throw new UnauthorizedException("Invalid email or password");
+    }
+    return AuthenticatedSessionResponseSchema.parse({
+      sessionToken: session.token,
+      session: profile,
+    });
+  }
+
+  async consumePasswordReset(
+    input: PasswordResetConsumeRequest,
+    clientKey: string,
+  ): Promise<AuthenticatedSessionResponse> {
+    const config = this.#localOwnerConfig();
+    const reset = PasswordResetConsumeRequestSchema.parse(input);
+    if (!this.#allowAttempt(`reset:${clientKey}`)) {
+      throw new HttpException(
+        "Too many authentication attempts",
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+    const passwordHash = await this.#hashPassword(reset.password);
+    const session = this.#newSession(config.sessionTtlMs);
+    const profile = await this.#repository.consumePasswordReset({
+      tokenHash: hashAuthToken(reset.token),
+      passwordHash,
+      ...session.repositoryInput,
+    });
+    if (profile === null) {
+      throw new UnauthorizedException("Invalid or expired password reset");
+    }
+    return AuthenticatedSessionResponseSchema.parse({
+      sessionToken: session.token,
+      session: profile,
+    });
+  }
+
+  async changePassword(
+    workspace: AuthenticatedWorkspace,
+    input: PasswordChangeRequest,
+  ): Promise<PasswordChangeResponse> {
+    this.#localOwnerConfig();
+    const request = PasswordChangeRequestSchema.parse(input);
+    const profile = this.#requireSessionProfile(workspace);
+    if (
+      profile.role !== "owner" ||
+      profile.organization !== this.#requiredBootstrapOrganization()
+    ) {
+      throw new UnauthorizedException("An owner session is required");
+    }
+    const user = await this.#repository.findUserByEmail(profile.email);
+    if (
+      user === null ||
+      user.userId !== profile.userId ||
+      user.workspaceId !== profile.workspaceId ||
+      user.passwordHash === null ||
+      !(await this.#verifyPassword(user.passwordHash, request.currentPassword))
+    ) {
+      throw new UnauthorizedException("Current password is invalid");
+    }
+    const changed = await this.#repository.changeOwnerPassword({
+      userId: profile.userId,
+      workspaceId: profile.workspaceId,
+      sessionId: workspace.tokenId,
+      currentPasswordHash: user.passwordHash,
+      newPasswordHash: await this.#hashPassword(request.newPassword),
+    });
+    if (!changed) {
+      throw new UnauthorizedException("Current password is invalid");
+    }
+    return PasswordChangeResponseSchema.parse({ changed: true });
   }
 
   session(workspace: AuthenticatedWorkspace): AuthSessionResponse {
@@ -169,43 +330,136 @@ export class AuthService {
     await this.#repository.revokeSession(workspace.tokenId);
   }
 
-  #allowInitiation(email: string): boolean {
+  #magicLinkConfig(): MagicLinkConfig {
+    if (this.#config.mode === "disabled") {
+      throw new NotFoundException("Not Found");
+    }
+    if (this.#config.mode !== "magic_link") {
+      throw new NotFoundException("Not Found");
+    }
+    return this.#config;
+  }
+
+  #localOwnerConfig(): LocalOwnerConfig {
+    if (this.#config.mode !== "local_owner") {
+      throw new NotFoundException("Not Found");
+    }
+    return this.#config;
+  }
+
+  #requiredBootstrapOrganization(): string {
+    if (this.#bootstrapOrganization === undefined) {
+      throw new ServiceUnavailableException(
+        "Owner bootstrap is not configured",
+      );
+    }
+    return this.#bootstrapOrganization;
+  }
+
+  #allowAttempt(key: string, limit = AUTH_ATTEMPT_LIMIT): boolean {
     const now = Date.now();
-    const current = this.#initiationWindows.get(email);
+    const current = this.#rateWindows.get(key);
     if (
       current === undefined ||
-      now - current.startedAt >= INITIATION_WINDOW_MS
+      now - current.startedAt >= AUTH_ATTEMPT_WINDOW_MS
     ) {
-      this.#initiationWindows.set(email, { startedAt: now, count: 1 });
+      if (current === undefined && this.#rateWindows.size >= MAX_RATE_WINDOWS) {
+        for (const [windowKey, window] of this.#rateWindows) {
+          if (now - window.startedAt >= AUTH_ATTEMPT_WINDOW_MS) {
+            this.#rateWindows.delete(windowKey);
+          }
+        }
+        if (this.#rateWindows.size >= MAX_RATE_WINDOWS) {
+          const oldestKey = this.#rateWindows.keys().next().value as
+            | string
+            | undefined;
+          if (oldestKey !== undefined) {
+            this.#rateWindows.delete(oldestKey);
+          }
+        }
+      }
+      this.#rateWindows.set(key, { startedAt: now, count: 1 });
       return true;
     }
-    if (current.count >= INITIATION_LIMIT) {
+    if (current.count >= limit) {
       return false;
     }
     current.count += 1;
     return true;
   }
 
-  #canInitiate(user: AuthUserRecord): boolean {
+  #canAuthenticate(user: AuthUserRecord): boolean {
     return user.userStatus === "active" && user.workspaceStatus === "active";
   }
 
+  #newSession(sessionTtlMs: number): {
+    token: string;
+    repositoryInput: {
+      sessionId: string;
+      sessionTokenHash: string;
+      sessionExpiresAt: Date;
+    };
+  } {
+    const token = createOpaqueAuthToken();
+    return {
+      token,
+      repositoryInput: {
+        sessionId: randomUUID(),
+        sessionTokenHash: hashAuthToken(token),
+        sessionExpiresAt: new Date(Date.now() + sessionTtlMs),
+      },
+    };
+  }
+
+  async #verifyMagicLink(
+    token: string,
+    sessionTtlMs: number,
+  ): Promise<AuthVerifyResponse | null> {
+    const session = this.#newSession(sessionTtlMs);
+    const profile = await this.#repository.verifyMagicLink({
+      tokenHash: hashAuthToken(token),
+      ...session.repositoryInput,
+    });
+    return profile === null
+      ? null
+      : AuthenticatedSessionResponseSchema.parse({
+          sessionToken: session.token,
+          session: profile,
+        });
+  }
+
+  async #hashPassword(password: string): Promise<string> {
+    return await hash(password, ARGON2_OPTIONS);
+  }
+
+  async #verifyPassword(
+    passwordHash: string,
+    password: string,
+  ): Promise<boolean> {
+    try {
+      return await verify(passwordHash, password);
+    } catch {
+      return false;
+    }
+  }
+
   async #issueMagicLink(
+    config: MagicLinkConfig,
     user: AuthUserRecord,
     showConnectorOnboarding: boolean,
   ): Promise<void> {
-    const emailConfig = this.#enabledEmailConfig();
-    const token = createOpaqueToken();
+    const token = createOpaqueAuthToken();
     const magicLinkId = randomUUID();
     await this.#repository.issueMagicLink({
       id: magicLinkId,
       userId: user.userId,
       tokenHash: hashAuthToken(token),
-      expiresAt: new Date(Date.now() + emailConfig.magicLinkTtlMs),
+      expiresAt: new Date(Date.now() + config.magicLinkTtlMs),
     });
 
     try {
       await this.#deliverMagicLink(
+        config,
         user.email,
         token,
         showConnectorOnboarding,
@@ -223,19 +477,19 @@ export class AuthService {
   }
 
   async #deliverMagicLink(
+    config: MagicLinkConfig,
     email: string,
     token: string,
     showConnectorOnboarding: boolean,
   ): Promise<void> {
-    const emailConfig = this.#enabledEmailConfig();
-    const verifyUrl = new URL("/auth/verify", emailConfig.webOrigin);
+    const verifyUrl = new URL("/auth/verify", config.webOrigin);
     const fragment = new URLSearchParams({ token });
     if (showConnectorOnboarding) {
       fragment.set("onboarding", "connect");
     }
     verifyUrl.hash = fragment.toString();
     const link = verifyUrl.toString();
-    if (emailConfig.mode === "local") {
+    if (config.delivery.mode === "local") {
       process.stdout.write(`[Lore auth] Magic link for ${email}: ${link}\n`);
       return;
     }
@@ -244,11 +498,11 @@ export class AuthService {
     const response = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: {
-        authorization: `Bearer ${emailConfig.apiKey}`,
+        authorization: `Bearer ${config.delivery.apiKey}`,
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        from: emailConfig.from,
+        from: config.delivery.from,
         to: [email],
         subject: showConnectorOnboarding
           ? "Activate your Lore workspace"
@@ -270,9 +524,13 @@ export class AuthService {
       workspace.credentialType !== "session" ||
       workspace.userId === undefined ||
       workspace.email === undefined ||
-      workspace.workspaceName === undefined
+      workspace.workspaceName === undefined ||
+      workspace.role === undefined ||
+      workspace.sessionExpiresAt === undefined
     ) {
-      throw new UnauthorizedException("An authenticated user session is required");
+      throw new UnauthorizedException(
+        "An authenticated user session is required",
+      );
     }
     return AuthSessionProfileSchema.parse({
       userId: workspace.userId,
@@ -280,6 +538,8 @@ export class AuthService {
       workspaceId: workspace.workspaceId,
       workspaceName: workspace.workspaceName,
       organization: workspace.organization,
+      role: workspace.role,
+      expiresAt: workspace.sessionExpiresAt,
     });
   }
 }

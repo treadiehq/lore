@@ -1,18 +1,23 @@
 name: lore
 
+x-api-image: &api-image "${LORE_API_IMAGE:-ghcr.io/treadiehq/lore-api}:${LORE_IMAGE_TAG:-0.1.4}"
+x-web-image: &web-image "${LORE_WEB_IMAGE:-ghcr.io/treadiehq/lore-web}:${LORE_IMAGE_TAG:-0.1.4}"
+
 services:
   postgres:
     image: pgvector/pgvector:0.8.6-pg18
     environment:
       POSTGRES_DB: lore
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-    ports:
-      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+      POSTGRES_USER: lore
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
     volumes:
       - postgres-data:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d lore"]
+      test:
+        [
+          "CMD-SHELL",
+          'pg_isready -h 127.0.0.1 -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"',
+        ]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -20,41 +25,40 @@ services:
     restart: unless-stopped
 
   migrate:
-    build:
-      context: .
-      dockerfile: deploy/Dockerfile
-      target: api
+    image: *api-image
     command:
-      - ./node_modules/.bin/drizzle-kit
-      - migrate
-      - --config=drizzle.config.ts
-    working_dir: /app/packages/database
+      - node
+      - node_modules/@lore-co/database/dist/migrate.js
     environment:
-      DATABASE_URL: postgres://postgres:postgres@postgres:5432/lore
+      DATABASE_URL: "postgresql://lore:${POSTGRES_PASSWORD:-}@postgres:5432/lore"
     depends_on:
       postgres:
         condition: service_healthy
     restart: "no"
 
   api:
-    build:
-      context: .
-      dockerfile: deploy/Dockerfile
-      target: api
+    image: *api-image
     environment:
-      NODE_ENV: development
-      DATABASE_URL: postgres://postgres:postgres@postgres:5432/lore
+      NODE_ENV: production
+      DATABASE_URL: "postgresql://lore:${POSTGRES_PASSWORD:-}@postgres:5432/lore"
       API_HOST: 0.0.0.0
       API_PORT: 3001
-      API_JSON_BODY_LIMIT: ${API_JSON_BODY_LIMIT:-2mb}
-      NUXT_ORIGIN: ${NUXT_ORIGIN:-http://localhost:3002}
-      LORE_WORKSPACE_TOKEN: ${LORE_WORKSPACE_TOKEN:-local-lore-development-token}
-      LORE_WORKSPACE_ORGANIZATION: ${LORE_WORKSPACE_ORGANIZATION:-local}
-      AUTH_EMAIL_MODE: ${AUTH_EMAIL_MODE:-local}
-      AUTH_WEB_ORIGIN: ${AUTH_WEB_ORIGIN:-http://localhost:3002}
-      AUTH_EMAIL_FROM: "${AUTH_EMAIL_FROM:-Lore <auth@example.com>}"
+      API_JSON_BODY_LIMIT: ${API_JSON_BODY_LIMIT:-1mb}
+      API_RATE_LIMIT_PER_MINUTE: ${API_RATE_LIMIT_PER_MINUTE:-120}
+      NUXT_ORIGIN: ${NUXT_ORIGIN:-}
+      LORE_SERVER_VERSION: ${LORE_IMAGE_TAG:-0.1.4}
+      LORE_SERVER_REVISION: ${LORE_SERVER_REVISION:-}
+      LORE_WORKSPACE_TOKEN: ${LORE_WORKSPACE_TOKEN:-}
+      LORE_WORKSPACE_ORGANIZATION: ${LORE_WORKSPACE_ORGANIZATION:-}
+      LORE_WORKSPACE_NAME: ${LORE_WORKSPACE_NAME:-}
+      AUTH_MODE: ${AUTH_MODE:-}
+      AUTH_EMAIL_MODE: ${AUTH_EMAIL_MODE:-disabled}
+      AUTH_WEB_ORIGIN: ${AUTH_WEB_ORIGIN:-}
+      LORE_OWNER_BOOTSTRAP_TOKEN: ${LORE_OWNER_BOOTSTRAP_TOKEN:-}
+      AUTH_EMAIL_FROM: ${AUTH_EMAIL_FROM:-}
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       AUTH_MAGIC_LINK_TTL_MINUTES: ${AUTH_MAGIC_LINK_TTL_MINUTES:-15}
+      AUTH_PASSWORD_RESET_TTL_MINUTES: ${AUTH_PASSWORD_RESET_TTL_MINUTES:-15}
       AUTH_SESSION_TTL_DAYS: ${AUTH_SESSION_TTL_DAYS:-30}
       DEVIN_POLLING_ENABLED: ${DEVIN_POLLING_ENABLED:-false}
       DEVIN_API_KEY: ${DEVIN_API_KEY:-}
@@ -79,7 +83,7 @@ services:
       CONTEXT_MAX_CHARACTERS: ${CONTEXT_MAX_CHARACTERS:-12000}
       CONTEXT_MAX_ESTIMATED_TOKENS: ${CONTEXT_MAX_ESTIMATED_TOKENS:-4000}
     ports:
-      - "127.0.0.1:${API_PORT:-3004}:3001"
+      - "${API_BIND_ADDRESS:-127.0.0.1}:${API_PORT:-3001}:3001"
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -98,21 +102,20 @@ services:
     restart: unless-stopped
 
   web:
-    build:
-      context: .
-      dockerfile: deploy/Dockerfile
-      target: web
+    image: *web-image
     environment:
       HOST: 0.0.0.0
       PORT: 3000
+      NITRO_HOST: 0.0.0.0
+      NITRO_PORT: 3000
       NUXT_LORE_API_URL: http://api:3001
       NUXT_AUTH_COOKIE_NAME: ${NUXT_AUTH_COOKIE_NAME:-lore_session}
-      NUXT_AUTH_COOKIE_SECURE: ${NUXT_AUTH_COOKIE_SECURE:-false}
+      NUXT_AUTH_COOKIE_SECURE: ${NUXT_AUTH_COOKIE_SECURE:-true}
       NUXT_PUBLIC_API_BASE_URL: /api/lore
-      NUXT_PUBLIC_LORE_CONNECTOR_API_URL: ${NUXT_PUBLIC_LORE_CONNECTOR_API_URL:-http://localhost:3004}
+      NUXT_PUBLIC_LORE_CONNECTOR_API_URL: ${NUXT_PUBLIC_LORE_CONNECTOR_API_URL:-http://localhost:3001}
       NUXT_PUBLIC_LORE_INSTALL_URL: ${NUXT_PUBLIC_LORE_INSTALL_URL:-https://raw.githubusercontent.com/treadiehq/lore/main/scripts/install.sh}
     ports:
-      - "127.0.0.1:${NUXT_PORT:-3002}:3000"
+      - "${NUXT_BIND_ADDRESS:-127.0.0.1}:${NUXT_PORT:-3000}:3000"
     depends_on:
       api:
         condition: service_healthy
@@ -129,24 +132,6 @@ services:
       retries: 12
       start_period: 15s
     restart: unless-stopped
-
-  postgres-test:
-    image: pgvector/pgvector:0.8.6-pg18
-    profiles: ["test"]
-    environment:
-      POSTGRES_DB: lore_test
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-    ports:
-      - "127.0.0.1:5433:5432"
-    tmpfs:
-      - /var/lib/postgresql
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d lore_test"]
-      interval: 2s
-      timeout: 5s
-      retries: 15
-      start_period: 5s
 
 volumes:
   postgres-data:

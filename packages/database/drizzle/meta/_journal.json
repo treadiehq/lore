@@ -64,6 +64,20 @@
       "when": 1786739999219,
       "tag": "0008_keen_millenium_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1787063196407,
+      "tag": "0009_high_misty_knight",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1787077164590,
+      "tag": "0010_secure_local_owner_auth",
+      "breakpoints": true
     }
   ]
 }

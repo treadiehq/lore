@@ -138,8 +138,8 @@ async function revokeToken(): Promise<void> {
         <p class="lore-page-description mt-1.5">
           {{
             isOnboarding
-              ? "Create one setup command, run it in your terminal, then keep working in Codex or Claude normally."
-              : "Create workspace tokens for Codex, Claude, Devin, CI, and other Lore connectors."
+              ? "Create one setup command, run it in your terminal, then keep working in Claude, Codex, or OpenCode normally."
+              : "Create workspace tokens for Claude, Codex, OpenCode, Devin, CI, and other Lore connectors."
           }}
         </p>
       </div>
@@ -171,8 +171,9 @@ async function revokeToken(): Promise<void> {
         Connect once. Lore works quietly afterward.
       </h2>
       <p class="mt-1 text-sm leading-6 text-lore-text-secondary">
-        The command installs Lore’s Codex and Claude hooks and verifies the
-        connection. Run it directly in your terminal, not in an agent chat.
+        The command installs Lore’s Claude/Codex hooks and OpenCode plugin, then
+        verifies the connection. Run it directly in your terminal, not in an
+        agent chat.
       </p>
     </section>
 

@@ -51,7 +51,7 @@ describe("GitHub live acceptance parsing", () => {
 
     expect(parsed.loreApiUrl).toBe("https://lore.example.com");
     expect(parsed.cliRepository).toBe("treadiehq/lore");
-    expect(parsed.cliVersion).toBe("v0.1.3");
+    expect(parsed.cliVersion).toBe("v0.1.4");
     expect(parsed.cleanup).toBe(true);
     expect(parsed.providers).toEqual(["codex", "devin"]);
   });

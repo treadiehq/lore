@@ -17,6 +17,7 @@ import {
   type ListWorkspaceTokensResponse,
   type RevokeWorkspaceTokenResponse,
 } from "@lore-co/core";
+import { OwnerOnly } from "../common/owner-only.decorator.js";
 import {
   requireWorkspace,
   type WorkspaceHttpRequest,
@@ -24,6 +25,7 @@ import {
 import { ZodValidationPipe } from "../common/zod-validation.pipe.js";
 import { WorkspaceTokenService } from "./workspace-token.service.js";
 
+@OwnerOnly()
 @Controller("v1/workspace-tokens")
 export class WorkspaceTokenController {
   readonly #service: WorkspaceTokenService;

@@ -13,15 +13,15 @@ interface SessionApiResponse {
 }
 
 export default defineEventHandler(async (event): Promise<AuthSessionResponse> => {
-  if (process.env.NUXT_E2E_FIXTURE === "1") {
-    return { session: e2eSession };
-  }
   const token = getAuthToken(event);
   if (token === undefined) {
     throw createError({
       statusCode: 401,
       statusMessage: "Authentication required",
     });
+  }
+  if (process.env.NUXT_E2E_FIXTURE === "1") {
+    return { session: e2eSession };
   }
 
   let response: SessionApiResponse;

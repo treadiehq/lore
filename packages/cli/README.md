@@ -1,10 +1,11 @@
 # Lore CLI
 
-The Lore connector installs native Codex and Claude Code lifecycle hooks. For
-each supported prompt, Lore attempts to retrieve relevant engineering context.
-A first prompt is observed on its own; later prompts are paired with the
-previous assistant response when valid pending state is available. Hook and
-network failures fail open so they do not block the agent.
+The Lore connector installs native Codex and Claude Code lifecycle hooks and
+the Lore OpenCode plugin. For each supported prompt, Lore attempts to retrieve
+relevant engineering context. A first prompt is observed on its own; later
+prompts are paired with the previous assistant response when valid pending
+state is available. Integration and network failures fail open so they do not
+block the agent.
 
 ## Install and connect
 
@@ -15,21 +16,32 @@ lore connect \
   --url https://lore.example.com \
   --token "$LORE_WORKSPACE_TOKEN" \
   --agent claude \
-  --agent codex
+  --agent codex \
+  --agent opencode
 
 lore doctor
 ```
 
 The package requires Node.js 22 or newer and installs the `lore` command.
 
-`connect` auto-detects `codex` and `claude`. Use `--agent codex` or
-`--agent claude` for an explicit headless install. Configuration is stored in
-`~/.lore/config.json` with mode `0600`.
+`connect` auto-detects the `codex`, `claude`, and `opencode` executables and an
+existing `~/.config/opencode/opencode.json`. Repeat `--agent claude`,
+`--agent codex`, or `--agent opencode` for an explicit headless install.
+Configuration is stored in `~/.lore/config.json` with mode `0600`.
+Before writing that file or any agent integration, `connect` calls the
+authenticated workspace identity endpoint and validates the strict response
+and server version. Revoked credentials, unreachable servers, timeouts, and
+incompatible servers leave local configuration untouched. Either
+`LORE_WORKSPACE_TOKEN` or the legacy `LORE_TOKEN` can provide the token; if
+both are set, they must match.
+For a review-first rollout in a personal vault or component catalog, follow the
+[OpenCode pilot runbook](../../docs/opencode-pilot.md).
 
 The command merges Lore-owned entries into `~/.codex/hooks.json` and
-`~/.claude/settings.json`. Existing settings and hooks are retained, changed
-files receive timestamped backups, and rerunning `connect` does not duplicate
-entries.
+`~/.claude/settings.json`, and merges `@lore-co/opencode` into the
+`plugin` array in `~/.config/opencode/opencode.json`. Existing settings, hooks,
+keys, and plugins are retained. Changed agent config files receive timestamped
+backups, and rerunning `connect` does not duplicate entries or backups.
 
 ## Inspect or remove
 
@@ -39,14 +51,43 @@ lore doctor
 lore disconnect
 ```
 
-The three commands above also support `--json`. `disconnect` removes only hook handlers
-marked as Lore-owned, then deletes Lore's credential, legacy hook runtime,
-pending state, and retry queue. It does not remove the installed `lore` binary
-or restore a whole backup over newer agent settings.
+The three commands above also support `--json`. `doctor` checks public
+`/health/ready` separately from authenticated workspace identity so unreachable,
+unready, and unauthorized states remain distinct. `disconnect` removes only hook
+handlers marked as Lore-owned and Lore's OpenCode plugin entry, then deletes
+Lore's credential, legacy hook runtime, pending state, and retry queue. It does
+not remove the installed `lore` binary or restore a whole backup over newer
+agent settings.
+
+## One-command self-hosting
+
+The published CLI embeds the canonical production Compose asset, so no
+repository clone is needed:
+
+```sh
+lore self-host up
+lore self-host status --json
+lore self-host reset-owner-password --email owner@example.com
+lore self-host down
+```
+
+`up` creates `~/.lore/self-host` with mode `0700` and stores its Compose,
+environment, and state files with mode `0600`. It generates independent
+PostgreSQL, workspace, and owner-bootstrap secrets, starts semver-pinned images,
+waits for `/health/ready`, and prints the setup URL and owner bootstrap token.
+The bootstrap token is printed only by the first successful `up`; retries reuse
+all state and secrets. Use `--headless`, `--state-dir`, `--image-tag`,
+`--api-port`, `--dashboard-port`, `--origin`, `--organization`, and `--name`
+for automated deployments. Every command has subcommand-specific `--help`, and
+`up`, `down`, and `status` support `--json`.
+
+`down` preserves the PostgreSQL volume. Destructive removal requires both
+`--volumes --yes`. Password reset links are printed once or can be written to a
+new mode-`0600` file with `--output`.
 
 ## Runtime behavior
 
-The hook handler:
+The Claude/Codex command-hook handler:
 
 - reads native hook JSON from standard input;
 - observes and enriches the first prompt in a new session;
@@ -58,12 +99,19 @@ The hook handler:
 
 First prompts use `POST /v1/observations` and audited
 `POST /v1/context/deliveries`. Paired turns use `POST /v1/turns` with a
-workspace bearer token and an `Idempotency-Key` header. Teachings default to
-workspace scope so connected agents can share them; the inferred repository
-still guides task retrieval. A correction made in one native repository is
-therefore workspace-global by default; only an integration that supplies a
-narrower learning scope changes that behavior. Observations, paired turns, and
-deliveries are visible through Lore activity.
+workspace bearer token and an `Idempotency-Key` header. Automatic teachings
+default to repository scope and follow the workspace learning policy. In
+`proposal_only` mode, every automatic capture remains proposed and cannot be
+retrieved or injected until dashboard review activates it. Rejected,
+suppressed, superseded, and deleted learnings are also excluded. Dirty files
+and the current directory remain task relevance evidence and do not narrow
+every learning. A reconciled correction inherits its target's scope. Only an
+explicit correction with clear team-, company-, organization-, or
+all-repositories evidence may become organization-only and apply across
+repositories. Native retrieval still requires a strong lexical, structural,
+symbol, or semantic match. Observations, paired turns, OpenCode plugin events,
+and deliveries are visible through Lore activity. OpenCode uses its plugin
+lifecycle and never runs through the Claude/Codex command-hook parser.
 
 ## External hosts
 
@@ -163,7 +211,7 @@ same-repository, non-draft pull requests bearing the corresponding
 `lore:codex-review` or `lore:devin-review` label.
 
 Generated jobs require a published standalone binary release and default to
-`treadiehq/lore` at `v0.1.3`. Set `LORE_CLI_REPOSITORY` to the publicly
+`treadiehq/lore` at `v0.1.4`. Set `LORE_CLI_REPOSITORY` to the publicly
 readable `owner/repository` and `LORE_CLI_VERSION` to an existing release tag
 when using another release source.
 

@@ -58,6 +58,6 @@ export default defineEventHandler(async (event): Promise<AuthSessionResponse> =>
     });
   }
 
-  setAuthCookie(event, response.sessionToken);
+  setAuthCookie(event, response.sessionToken, response.session.expiresAt);
   return { session: response.session };
 });

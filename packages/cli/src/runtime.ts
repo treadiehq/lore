@@ -27,23 +27,25 @@ declare const __LORE_STANDALONE__: boolean | undefined;
 const RUNTIME_VERSION =
   typeof __LORE_VERSION__ === "string" && __LORE_VERSION__ !== ""
     ? __LORE_VERSION__
-    : "0.1.3";
+    : "0.1.4";
 const IS_STANDALONE_RUNTIME =
   typeof __LORE_STANDALONE__ === "boolean" && __LORE_STANDALONE__;
 
-export type AgentName = "codex" | "claude";
+export type CommandHookAgentName = "codex" | "claude";
+/** @deprecated Use CommandHookAgentName for native command-hook integrations. */
+export type AgentName = CommandHookAgentName;
 
 interface RuntimeConfig {
   version: 1;
   apiUrl: string;
   dashboardUrl?: string;
   token: string;
-  agents: AgentName[];
+  agents: CommandHookAgentName[];
   timeoutMs?: number;
 }
 
 interface PendingAssistantMessage {
-  agent: AgentName;
+  agent: CommandHookAgentName;
   sessionId: string;
   assistantMessage: string;
   cwd?: string;
@@ -55,7 +57,7 @@ export interface TurnRequest {
   idempotencyKey: string;
   connector: "lore-cli";
   eventId: string;
-  agent: AgentName;
+  agent: CommandHookAgentName;
   sessionId: string;
   previousAssistant: {
     content: string;
@@ -88,7 +90,7 @@ export interface TurnRequest {
 interface PromptObservationRequest {
   idempotencyKey: string;
   connector?: "lore-cli";
-  agent: AgentName;
+  agent: CommandHookAgentName;
   sessionId: string;
   eventId: string;
   prompt: string;
@@ -142,7 +144,11 @@ interface GitContext {
 interface DeliveryResult {
   context: string;
   receiptId?: string;
-  learned: Array<{ id: string; content: string }>;
+  learned: Array<{
+    id: string;
+    content: string;
+    status?: "active" | "proposed";
+  }>;
   delivered: Array<{
     id: string;
     content: string;
@@ -252,7 +258,8 @@ async function readRuntimeConfig(home?: string): Promise<RuntimeConfig | null> {
       return null;
     }
     const agents = parsed.agents.filter(
-      (agent): agent is AgentName => agent === "codex" || agent === "claude",
+      (agent): agent is CommandHookAgentName =>
+        agent === "codex" || agent === "claude",
     );
     const timeoutMs =
       typeof parsed.timeoutMs === "number" &&
@@ -280,7 +287,7 @@ async function readRuntimeConfig(home?: string): Promise<RuntimeConfig | null> {
 }
 
 function pendingPath(
-  agent: AgentName,
+  agent: CommandHookAgentName,
   sessionId: string,
   home?: string,
 ): string {
@@ -294,7 +301,7 @@ function pendingPath(
 
 async function savePending(
   input: HookInput,
-  agent: AgentName,
+  agent: CommandHookAgentName,
   sessionId: string,
   now: Date,
   home?: string,
@@ -316,7 +323,7 @@ async function savePending(
 }
 
 async function consumePending(
-  agent: AgentName,
+  agent: CommandHookAgentName,
   sessionId: string,
   home?: string,
 ): Promise<PendingAssistantMessage | null> {
@@ -430,7 +437,6 @@ async function collectGitContext(cwd: string | undefined): Promise<GitContext> {
       scope,
       learningScope: {
         repo: scope.repo,
-        ...(scope.path === undefined ? {} : { path: scope.path }),
       },
     };
   }
@@ -465,13 +471,10 @@ async function collectGitContext(cwd: string | undefined): Promise<GitContext> {
     MAX_GIT_DIFF_BYTES,
     "\n\n[diff truncated by Lore]",
   ).trim();
-  const learningPath =
-    files.length === 1 ? files[0] : scope.path;
   return {
     scope,
     learningScope: {
       repo: scope.repo,
-      ...(learningPath === undefined ? {} : { path: learningPath }),
     },
     ...(files.length === 0 ? {} : { files }),
     ...(diff === "" ? {} : { diff }),
@@ -480,7 +483,7 @@ async function collectGitContext(cwd: string | undefined): Promise<GitContext> {
 
 export async function createTurnRequest(
   input: HookInput,
-  agent: AgentName,
+  agent: CommandHookAgentName,
   pending: PendingAssistantMessage,
   now: Date,
 ): Promise<TurnRequest | null> {
@@ -547,7 +550,7 @@ export async function createTurnRequest(
 
 function createPromptObservationRequest(
   input: HookInput,
-  agent: AgentName,
+  agent: CommandHookAgentName,
   sessionId: string,
   now: Date,
   gitContext: GitContext,
@@ -612,7 +615,7 @@ function emptyDelivery(): DeliveryResult {
   return { context: "", learned: [], delivered: [] };
 }
 
-function memorySummaries(value: unknown): Array<{ id: string; content: string }> {
+function memorySummaries(value: unknown): DeliveryResult["learned"] {
   if (!Array.isArray(value)) {
     return [];
   }
@@ -620,7 +623,15 @@ function memorySummaries(value: unknown): Array<{ id: string; content: string }>
     isObject(candidate) &&
     typeof candidate.id === "string" &&
     typeof candidate.content === "string"
-      ? [{ id: candidate.id, content: candidate.content }]
+      ? [
+          {
+            id: candidate.id,
+            content: candidate.content,
+            ...(candidate.status === "active" || candidate.status === "proposed"
+              ? { status: candidate.status }
+              : {}),
+          },
+        ]
       : [],
   );
 }
@@ -783,7 +794,7 @@ async function postPromptObservation(
 
 async function getPromptContext(
   config: RuntimeConfig,
-  agent: AgentName,
+  agent: CommandHookAgentName,
   sessionId: string,
   sourceEventId: string,
   prompt: string,
@@ -949,7 +960,7 @@ async function retryOne(
 
 function receiptMessage(
   config: RuntimeConfig,
-  agent: AgentName,
+  agent: CommandHookAgentName,
   delivery: DeliveryResult,
 ): string | undefined {
   const preview = (value: string): string => {
@@ -961,7 +972,9 @@ function receiptMessage(
   const parts: string[] = [];
   const learned = delivery.learned[0];
   if (learned !== undefined) {
-    parts.push(`Lore learned: ${preview(learned.content)}`);
+    parts.push(
+      `${learned.status === "proposed" ? "Lore proposed" : "Lore activated"}: ${preview(learned.content)}`,
+    );
   }
   const delivered = delivery.delivered[0];
   if (delivered !== undefined) {
@@ -988,7 +1001,9 @@ function receiptMessage(
           : `/memories/${encodeURIComponent(learned.id)}`
         : `/receipts/${encodeURIComponent(delivery.receiptId)}`;
     if (path !== undefined) {
-      parts.push(`Review or forget: ${config.dashboardUrl}${path}`);
+      parts.push(
+        `${learned?.status === "proposed" ? "Review proposal" : "Review or forget"}: ${config.dashboardUrl}${path}`,
+      );
     }
   }
   return boundedContext(parts.join(" · "));
@@ -996,7 +1011,7 @@ function receiptMessage(
 
 export async function handleHookEvent(
   value: unknown,
-  agent: AgentName,
+  agent: CommandHookAgentName,
   options: HookRuntimeOptions = {},
 ): Promise<HookResult | undefined> {
   if (!isObject(value)) {
@@ -1131,7 +1146,7 @@ async function readStdin(): Promise<unknown> {
   return JSON.parse(input) as unknown;
 }
 
-function parseAgent(args: readonly string[]): AgentName | null {
+function parseAgent(args: readonly string[]): CommandHookAgentName | null {
   const index = args.indexOf("--agent");
   const value = index < 0 ? undefined : args[index + 1];
   return value === "codex" || value === "claude" ? value : null;

@@ -1,0 +1,139 @@
+name: Publish container images
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate workspace and release versions
+        env:
+          RELEASE_REF: ${{ github.ref }}
+        run: |
+          node <<'NODE'
+          const { readdirSync, readFileSync } = require("node:fs");
+          const { join } = require("node:path");
+
+          const manifests = ["package.json"];
+          for (const root of ["apps", "packages"]) {
+            for (const entry of readdirSync(root, { withFileTypes: true })) {
+              if (!entry.isDirectory()) continue;
+              const direct = join(root, entry.name, "package.json");
+              try {
+                readFileSync(direct);
+                manifests.push(direct);
+              } catch {}
+              if (root === "packages" && entry.name === "adapters") {
+                for (const adapter of readdirSync(join(root, entry.name), {
+                  withFileTypes: true,
+                })) {
+                  if (adapter.isDirectory()) {
+                    manifests.push(
+                      join(root, entry.name, adapter.name, "package.json"),
+                    );
+                  }
+                }
+              }
+            }
+          }
+
+          const versions = new Map(
+            manifests.map((path) => [
+              path,
+              JSON.parse(readFileSync(path, "utf8")).version,
+            ]),
+          );
+          const expected = versions.get("package.json");
+          const mismatches = [...versions].filter(
+            ([, version]) => version !== expected,
+          );
+          if (mismatches.length > 0) {
+            throw new Error(
+              `Workspace versions differ from ${expected}: ${JSON.stringify(mismatches)}`,
+            );
+          }
+          if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(expected)) {
+            throw new Error(`Root version is not semver: ${expected}`);
+          }
+
+          const compose = readFileSync("docker-compose.yml", "utf8");
+          if (!compose.includes(`LORE_IMAGE_TAG:-${expected}`)) {
+            throw new Error(
+              `docker-compose.yml does not default to image version ${expected}`,
+            );
+          }
+
+          const releaseRef = process.env.RELEASE_REF;
+          if (
+            releaseRef.startsWith("refs/tags/") &&
+            releaseRef !== `refs/tags/v${expected}`
+          ) {
+            throw new Error(
+              `Release tag ${releaseRef} does not match workspace version v${expected}`,
+            );
+          }
+          NODE
+
+  publish:
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: api
+            target: api
+          - image: web
+            target: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Sign in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate immutable image metadata
+        id: metadata
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}-${{ matrix.image }}
+          flavor: latest=false
+          tags: |
+            type=sha,format=long,prefix=sha-
+            type=semver,pattern={{version}}
+
+      - name: Build and publish ${{ matrix.image }} image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          target: ${{ matrix.target }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+          provenance: mode=max
+          sbom: true

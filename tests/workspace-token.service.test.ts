@@ -15,6 +15,8 @@ const dashboardSession: AuthenticatedWorkspace = {
   userId,
   email: "owner@example.com",
   workspaceName: "Acme",
+  role: "owner",
+  sessionExpiresAt: "2099-01-01T00:00:00.000Z",
 };
 
 function token(overrides: Partial<WorkspaceToken> = {}): WorkspaceToken {
@@ -91,6 +93,16 @@ describe("workspace token management", () => {
         organization: "acme",
         tokenId: "55555555-5555-4555-8555-555555555555",
         credentialType: "workspace_token",
+      }),
+    ).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("rejects member sessions", async () => {
+    const repository = {} as PostgresPilotRepository;
+    await expect(
+      new WorkspaceTokenService(repository).list({
+        ...dashboardSession,
+        role: "member",
       }),
     ).rejects.toMatchObject({ status: 403 });
   });

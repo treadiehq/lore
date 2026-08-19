@@ -17,6 +17,7 @@ export type LearningCategory = MemoryCategory;
 
 export const MemoryStatusSchema = z.enum([
   "active",
+  "proposed",
   "suppressed",
   "superseded",
   "deleted",
@@ -24,6 +25,77 @@ export const MemoryStatusSchema = z.enum([
 export type MemoryStatus = z.infer<typeof MemoryStatusSchema>;
 export const LearningStatusSchema = MemoryStatusSchema;
 export type LearningStatus = MemoryStatus;
+
+export const WorkspaceLearningModeSchema = z.enum([
+  "trust_tiered",
+  "proposal_only",
+]);
+export type WorkspaceLearningMode = z.infer<
+  typeof WorkspaceLearningModeSchema
+>;
+
+export const WorkspaceLearningPolicySchema = z
+  .object({
+    workspaceId: z.uuid(),
+    learningMode: WorkspaceLearningModeSchema,
+    llmConflictAnalysisEnabled: z.boolean(),
+    updatedAt: z.iso.datetime({ offset: true }),
+  })
+  .strict();
+export type WorkspaceLearningPolicy = z.infer<
+  typeof WorkspaceLearningPolicySchema
+>;
+
+export const UpdateWorkspaceLearningPolicySchema = z
+  .object({
+    learningMode: WorkspaceLearningModeSchema.optional(),
+    llmConflictAnalysisEnabled: z.boolean().optional(),
+  })
+  .strict()
+  .refine(
+    (input) =>
+      input.learningMode !== undefined ||
+      input.llmConflictAnalysisEnabled !== undefined,
+    { message: "At least one learning policy field is required" },
+  );
+export type UpdateWorkspaceLearningPolicy = z.infer<
+  typeof UpdateWorkspaceLearningPolicySchema
+>;
+
+export const ProposalReviewDecisionSchema = z.enum([
+  "approve",
+  "use_proposal",
+  "keep_both",
+  "reject",
+]);
+export type ProposalReviewDecision = z.infer<
+  typeof ProposalReviewDecisionSchema
+>;
+
+export const MemoryConflictDetectorSchema = z.enum([
+  "deterministic",
+  "lexical",
+  "semantic",
+  "llm",
+]);
+export type MemoryConflictDetectorKind = z.infer<
+  typeof MemoryConflictDetectorSchema
+>;
+
+export const MemoryConflictSeveritySchema = z.enum(["blocking", "warning"]);
+export type MemoryConflictSeverity = z.infer<
+  typeof MemoryConflictSeveritySchema
+>;
+
+export const MemoryConflictEvidenceSchema = z
+  .object({
+    summary: z.string().trim().min(1).max(2_000),
+    details: z.record(z.string(), z.unknown()).optional(),
+  })
+  .strict();
+export type MemoryConflictEvidence = z.infer<
+  typeof MemoryConflictEvidenceSchema
+>;
 
 export function normalizeRepositoryPath(value: string): string {
   const segments: string[] = [];
@@ -74,6 +146,123 @@ export const MemorySourceSchema = z
 export type MemorySource = z.infer<typeof MemorySourceSchema>;
 export const LearningSourceSchema = MemorySourceSchema;
 export type LearningSource = MemorySource;
+
+export const ProposalMetadataSchema = z
+  .object({
+    memoryId: z.uuid(),
+    workspaceId: z.uuid(),
+    policyMode: WorkspaceLearningModeSchema,
+    reason: z.string().trim().min(1).max(1_000),
+    provenance: MemorySourceSchema,
+    proposedAt: z.iso.datetime({ offset: true }),
+    decision: ProposalReviewDecisionSchema.nullable(),
+    reviewerId: z.string().trim().min(1).max(500).nullable(),
+    decisionReason: z.string().trim().min(1).max(2_000).nullable(),
+    decidedAt: z.iso.datetime({ offset: true }).nullable(),
+    decisionTargetMemoryId: z.uuid().nullable(),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    const pendingFieldsAreNull =
+      input.reviewerId === null &&
+      input.decisionReason === null &&
+      input.decidedAt === null &&
+      input.decisionTargetMemoryId === null;
+    if (input.decision === null && !pendingFieldsAreNull) {
+      context.addIssue({
+        code: "custom",
+        message: "Pending proposals cannot contain decision metadata",
+      });
+      return;
+    }
+    if (
+      input.decision !== null &&
+      (input.reviewerId === null ||
+        input.decisionReason === null ||
+        input.decidedAt === null)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Resolved proposals require complete decision metadata",
+      });
+    }
+    if (
+      input.decision === "use_proposal" &&
+      input.decisionTargetMemoryId === null
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["decisionTargetMemoryId"],
+        message: "Using a proposal requires a deterministic conflict target",
+      });
+    }
+    if (
+      input.decision !== null &&
+      input.decision !== "use_proposal" &&
+      input.decisionTargetMemoryId !== null
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["decisionTargetMemoryId"],
+        message: "Only use_proposal decisions may record a target",
+      });
+    }
+  });
+export type ProposalMetadata = z.infer<typeof ProposalMetadataSchema>;
+
+export const MemoryConflictSchema = z
+  .object({
+    id: z.uuid(),
+    workspaceId: z.uuid(),
+    proposalMemoryId: z.uuid(),
+    targetMemoryId: z.uuid(),
+    detector: MemoryConflictDetectorSchema,
+    severity: MemoryConflictSeveritySchema,
+    evidence: MemoryConflictEvidenceSchema,
+    createdAt: z.iso.datetime({ offset: true }),
+    resolution: ProposalReviewDecisionSchema.nullable(),
+    resolvedAt: z.iso.datetime({ offset: true }).nullable(),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    if (input.proposalMemoryId === input.targetMemoryId) {
+      context.addIssue({
+        code: "custom",
+        path: ["targetMemoryId"],
+        message: "A proposal cannot conflict with itself",
+      });
+    }
+    if ((input.resolution === null) !== (input.resolvedAt === null)) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "Conflict resolution and resolution timestamp must be set together",
+      });
+    }
+  });
+export type MemoryConflict = z.infer<typeof MemoryConflictSchema>;
+
+export const DetectedMemoryConflictSchema = z
+  .object({
+    targetMemoryId: z.uuid(),
+    detector: MemoryConflictDetectorSchema,
+    severity: MemoryConflictSeveritySchema,
+    evidence: MemoryConflictEvidenceSchema,
+  })
+  .strict();
+export type DetectedMemoryConflict = z.infer<
+  typeof DetectedMemoryConflictSchema
+>;
+
+export const MemoryConflictAnalysisSchema = z
+  .object({
+    classification: z.enum(["conflict", "related", "not_conflict"]),
+    explanation: z.string().trim().min(1).max(2_000),
+  })
+  .strict();
+export type MemoryConflictAnalysis = z.infer<
+  typeof MemoryConflictAnalysisSchema
+>;
 
 export const AgentMessageSchema = z
   .object({
@@ -153,6 +342,29 @@ export const AgentTaskSchema = z
   .superRefine(addScopeConflictIssues);
 export type AgentTask = z.infer<typeof AgentTaskSchema>;
 
+export const CandidateScopeIntentSchema = z.enum([
+  "organization",
+  "repository",
+  "uncertain",
+]);
+export type CandidateScopeIntent = z.infer<
+  typeof CandidateScopeIntentSchema
+>;
+
+export const CandidateScopeEvidenceSchema = z
+  .object({
+    basis: z.enum([
+      "explicit_user_statement",
+      "interaction_repository",
+      "extractor_inference",
+    ]),
+    excerpt: z.string().trim().min(1).max(500),
+  })
+  .strict();
+export type CandidateScopeEvidence = z.infer<
+  typeof CandidateScopeEvidenceSchema
+>;
+
 export const CandidateMemorySchema = z
   .object({
     content: z.string().trim().min(1),
@@ -167,8 +379,30 @@ export const CandidateMemorySchema = z
     confirmationReason: z.string().trim().min(1).max(1_000).optional(),
     reconciliationKey: z.string().trim().min(1).max(500).optional(),
     supersedesContent: z.string().trim().min(1).max(100_000).optional(),
+    scopeIntent: CandidateScopeIntentSchema.optional(),
+    scopeEvidence: CandidateScopeEvidenceSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((input, context) => {
+    if (
+      input.scopeIntent === "organization" &&
+      input.scopeEvidence?.basis !== "explicit_user_statement"
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["scopeEvidence"],
+        message:
+          "Organization scope intent requires explicit user-statement evidence",
+      });
+    }
+    if (input.scopeIntent === undefined && input.scopeEvidence !== undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["scopeIntent"],
+        message: "Scope evidence requires a bounded scope intent",
+      });
+    }
+  });
 export type CandidateMemory = z.infer<typeof CandidateMemorySchema>;
 
 export const MemorySchema = z
@@ -196,6 +430,96 @@ export const MemorySchema = z
 export type Memory = z.infer<typeof MemorySchema>;
 export const LearningSchema = MemorySchema;
 export type Learning = Memory;
+
+export const RecordProposalConflictDtoSchema = z
+  .object({
+    proposalMemoryId: z.uuid(),
+    targetMemoryId: z.uuid(),
+    detector: MemoryConflictDetectorSchema,
+    severity: MemoryConflictSeveritySchema,
+    evidence: MemoryConflictEvidenceSchema,
+  })
+  .strict()
+  .refine((input) => input.proposalMemoryId !== input.targetMemoryId, {
+    path: ["targetMemoryId"],
+    message: "A proposal cannot conflict with itself",
+  });
+export type RecordProposalConflictDto = z.infer<
+  typeof RecordProposalConflictDtoSchema
+>;
+
+export const ReviewProposalDtoSchema = z
+  .object({
+    proposalMemoryId: z.uuid(),
+    decision: ProposalReviewDecisionSchema,
+    reviewerId: z.string().trim().min(1).max(500),
+    reason: z.string().trim().min(1).max(2_000),
+    targetMemoryId: z.uuid().optional(),
+    scope: MemoryScopeSchema.optional(),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    if (input.decision === "use_proposal" && input.targetMemoryId === undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["targetMemoryId"],
+        message: "Using a proposal requires a deterministic conflict target",
+      });
+    }
+    if (input.decision !== "use_proposal" && input.targetMemoryId !== undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["targetMemoryId"],
+        message: "Only use_proposal decisions accept a target",
+      });
+    }
+    if (input.scope !== undefined && input.decision === "reject") {
+      context.addIssue({
+        code: "custom",
+        path: ["scope"],
+        message: "Rejected proposals cannot change scope",
+      });
+    }
+  });
+export type ReviewProposalDto = z.infer<typeof ReviewProposalDtoSchema>;
+
+export const ProposalRecordSchema = z
+  .object({
+    memory: MemorySchema,
+    metadata: ProposalMetadataSchema,
+    conflicts: z.array(MemoryConflictSchema),
+  })
+  .strict();
+export type ProposalRecord = z.infer<typeof ProposalRecordSchema>;
+
+export const ProposalDetailResponseSchema = ProposalRecordSchema.extend({
+  conflictTargets: z.array(MemorySchema),
+}).strict();
+export type ProposalDetailResponse = z.infer<
+  typeof ProposalDetailResponseSchema
+>;
+
+export const ProposeMemoryResultSchema = z
+  .object({
+    memory: MemorySchema,
+    metadata: ProposalMetadataSchema.nullable(),
+    conflicts: z.array(MemoryConflictSchema),
+    inserted: z.boolean(),
+  })
+  .strict();
+export type ProposeMemoryResult = z.infer<typeof ProposeMemoryResultSchema>;
+
+export const ReviewProposalResponseSchema = z
+  .object({
+    proposal: MemorySchema,
+    metadata: ProposalMetadataSchema,
+    conflicts: z.array(MemoryConflictSchema),
+    supersededMemory: MemorySchema.nullable(),
+  })
+  .strict();
+export type ReviewProposalResponse = z.infer<
+  typeof ReviewProposalResponseSchema
+>;
 
 export const CreateMemoryDtoSchema = z
   .object({

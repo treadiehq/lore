@@ -1,21 +1,37 @@
 import {
   createMemoryFingerprint,
   ListMemoriesDtoSchema,
+  MemoryConflictSchema,
   MemorySchema,
   MemoryUpdateSchema,
+  ProposalMetadataSchema,
+  ReviewProposalDtoSchema,
+  UpdateWorkspaceLearningPolicySchema,
+  WorkspaceLearningPolicySchema,
   type FindActiveCandidatesOptions,
+  type InsertMemoryConflictResult,
   type InsertMemoryResult,
   type ListMemoriesDto,
   type ListMemoriesResponse,
   type Memory,
+  type MemoryConflict,
   type MemoryRepository,
   type MemoryScope,
   type MemoryUpdate,
+  type ProposalMetadata,
+  type ProposalRecord,
+  type ProposeMemoryResult,
   type RepositoryContext,
+  type ReviewProposalDto,
+  type ReviewProposalResponse,
   type SupersedeMemoryResult,
+  type UpdateWorkspaceLearningPolicy,
+  type WorkspaceLearningPolicy,
+  type WorkspaceRepositoryContext,
 } from "@lore-co/core";
 import {
   and,
+  asc,
   cosineDistance,
   count,
   desc,
@@ -35,7 +51,16 @@ import {
   type PostgresJsDatabase,
 } from "drizzle-orm/postgres-js";
 import postgres, { type Sql } from "postgres";
-import { memories, type MemoryRow, type NewMemoryRow } from "./schema.js";
+import {
+  memories,
+  memoryConflicts,
+  memoryProposals,
+  workspaces,
+  type MemoryConflictRow,
+  type MemoryProposalRow,
+  type MemoryRow,
+  type NewMemoryRow,
+} from "./schema.js";
 import * as schema from "./schema.js";
 
 export * from "./schema.js";
@@ -141,6 +166,37 @@ function rowToMemory(row: MemoryRow): Memory {
   });
 }
 
+function rowToProposalMetadata(row: MemoryProposalRow): ProposalMetadata {
+  return ProposalMetadataSchema.parse({
+    memoryId: row.memoryId,
+    workspaceId: row.workspaceId,
+    policyMode: row.policyMode,
+    reason: row.reason,
+    provenance: row.provenance,
+    proposedAt: row.proposedAt.toISOString(),
+    decision: row.decision,
+    reviewerId: row.reviewerId,
+    decisionReason: row.decisionReason,
+    decidedAt: row.decidedAt?.toISOString() ?? null,
+    decisionTargetMemoryId: row.decisionTargetMemoryId,
+  });
+}
+
+function rowToMemoryConflict(row: MemoryConflictRow): MemoryConflict {
+  return MemoryConflictSchema.parse({
+    id: row.id,
+    workspaceId: row.workspaceId,
+    proposalMemoryId: row.proposalMemoryId,
+    targetMemoryId: row.targetMemoryId,
+    detector: row.detector,
+    severity: row.severity,
+    evidence: row.evidence,
+    createdAt: row.createdAt.toISOString(),
+    resolution: row.resolution,
+    resolvedAt: row.resolvedAt?.toISOString() ?? null,
+  });
+}
+
 function requiredMemoryWorkspaceId(memory: Memory): string {
   const workspaceId = memory.workspaceId ?? memory.source.workspaceId;
   if (workspaceId === undefined) {
@@ -148,6 +204,12 @@ function requiredMemoryWorkspaceId(memory: Memory): string {
   }
   return workspaceId;
 }
+
+const FINGERPRINT_RESERVING_STATUSES = [
+  "active",
+  "proposed",
+  "suppressed",
+] as const;
 
 function memoryToRow(memory: Memory): NewMemoryRow {
   const workspaceId = requiredMemoryWorkspaceId(memory);
@@ -259,13 +321,16 @@ export class PostgresMemoryRepository implements MemoryRepository {
 
   async insert(memoryInput: Memory): Promise<InsertMemoryResult> {
     const memory = MemorySchema.parse(memoryInput);
+    if (memory.status === "proposed") {
+      throw new Error("Proposed memories must be inserted with proposal metadata");
+    }
     const workspaceId = requiredMemoryWorkspaceId(memory);
     const inserted = await this.#db
       .insert(memories)
       .values(memoryToRow(memory))
       .onConflictDoNothing({
         target: [memories.workspaceId, memories.fingerprint],
-        where: inArray(memories.status, ["active", "suppressed"]),
+        where: inArray(memories.status, FINGERPRINT_RESERVING_STATUSES),
       })
       .returning();
     const insertedRow = inserted[0];
@@ -280,7 +345,7 @@ export class PostgresMemoryRepository implements MemoryRepository {
         and(
           eq(memories.workspaceId, workspaceId),
           eq(memories.fingerprint, memory.fingerprint),
-          inArray(memories.status, ["active", "suppressed"]),
+          inArray(memories.status, FINGERPRINT_RESERVING_STATUSES),
         ),
       )
       .limit(1);
@@ -291,6 +356,166 @@ export class PostgresMemoryRepository implements MemoryRepository {
       );
     }
     return { memory: rowToMemory(existingRow), inserted: false };
+  }
+
+  async propose(
+    memoryInput: Memory,
+    metadataInput: ProposalMetadata,
+    conflictInputs: readonly MemoryConflict[] = [],
+  ): Promise<ProposeMemoryResult> {
+    const memory = MemorySchema.parse(memoryInput);
+    const metadata = ProposalMetadataSchema.parse(metadataInput);
+    const conflicts = conflictInputs.map((conflict) =>
+      MemoryConflictSchema.parse(conflict),
+    );
+    const workspaceId = requiredMemoryWorkspaceId(memory);
+    if (memory.status !== "proposed") {
+      throw new Error("Proposal insertion requires proposed memory status");
+    }
+    if (
+      metadata.memoryId !== memory.id ||
+      metadata.workspaceId !== workspaceId
+    ) {
+      throw new Error("Proposal metadata does not match its memory");
+    }
+    if (
+      metadata.decision !== null ||
+      JSON.stringify(metadata.provenance) !== JSON.stringify(memory.source)
+    ) {
+      throw new Error("New proposal metadata must contain pending provenance");
+    }
+    const conflictEdges = new Set<string>();
+    for (const conflict of conflicts) {
+      if (
+        conflict.workspaceId !== workspaceId ||
+        conflict.proposalMemoryId !== memory.id ||
+        conflict.resolution !== null
+      ) {
+        throw new Error("Proposal conflict metadata is inconsistent");
+      }
+      const edge = `${conflict.targetMemoryId}\0${conflict.detector}`;
+      if (conflictEdges.has(edge)) {
+        throw new Error("Duplicate conflict edge in proposal");
+      }
+      conflictEdges.add(edge);
+    }
+
+    return this.#db.transaction(async (transaction) => {
+      const inserted = await transaction
+        .insert(memories)
+        .values(memoryToRow(memory))
+        .onConflictDoNothing({
+          target: [memories.workspaceId, memories.fingerprint],
+          where: inArray(memories.status, FINGERPRINT_RESERVING_STATUSES),
+        })
+        .returning();
+      const insertedRow = inserted[0];
+      if (insertedRow === undefined) {
+        const existingRows = await transaction
+          .select()
+          .from(memories)
+          .where(
+            and(
+              eq(memories.workspaceId, workspaceId),
+              eq(memories.fingerprint, memory.fingerprint),
+              inArray(memories.status, FINGERPRINT_RESERVING_STATUSES),
+            ),
+          )
+          .limit(1);
+        const existing = existingRows[0];
+        if (existing === undefined) {
+          throw new Error(
+            `Memory proposal conflicted but fingerprint was not found: ${memory.fingerprint}`,
+          );
+        }
+        const proposalRows =
+          existing.status === "proposed"
+            ? await transaction
+                .select()
+                .from(memoryProposals)
+                .where(
+                  and(
+                    eq(memoryProposals.memoryId, existing.id),
+                    eq(memoryProposals.workspaceId, workspaceId),
+                  ),
+                )
+                .limit(1)
+            : [];
+        const conflictRows =
+          existing.status === "proposed"
+            ? await transaction
+                .select()
+                .from(memoryConflicts)
+                .where(
+                  and(
+                    eq(memoryConflicts.proposalMemoryId, existing.id),
+                    eq(memoryConflicts.workspaceId, workspaceId),
+                  ),
+                )
+                .orderBy(
+                  asc(memoryConflicts.createdAt),
+                  memoryConflicts.id,
+                )
+            : [];
+        return {
+          memory: rowToMemory(existing),
+          metadata:
+            proposalRows[0] === undefined
+              ? null
+              : rowToProposalMetadata(proposalRows[0]),
+          conflicts: conflictRows.map(rowToMemoryConflict),
+          inserted: false,
+        };
+      }
+
+      for (const conflict of conflicts) {
+        const targetRows = await transaction
+          .select({ id: memories.id, status: memories.status })
+          .from(memories)
+          .where(
+            and(
+              eq(memories.id, conflict.targetMemoryId),
+              eq(memories.workspaceId, workspaceId),
+              inArray(memories.status, ["active", "suppressed"]),
+            ),
+          )
+          .limit(1);
+        if (targetRows[0] === undefined) {
+          throw new Error(
+            `Conflict target is not reviewable: ${conflict.targetMemoryId}`,
+          );
+        }
+      }
+
+      await transaction.insert(memoryProposals).values({
+        memoryId: metadata.memoryId,
+        workspaceId,
+        policyMode: metadata.policyMode,
+        reason: metadata.reason,
+        provenance: metadata.provenance,
+        proposedAt: new Date(metadata.proposedAt),
+      });
+      if (conflicts.length > 0) {
+        await transaction.insert(memoryConflicts).values(
+          conflicts.map((conflict) => ({
+            id: conflict.id,
+            workspaceId,
+            proposalMemoryId: conflict.proposalMemoryId,
+            targetMemoryId: conflict.targetMemoryId,
+            detector: conflict.detector,
+            severity: conflict.severity,
+            evidence: conflict.evidence,
+            createdAt: new Date(conflict.createdAt),
+          })),
+        );
+      }
+      return {
+        memory: rowToMemory(insertedRow),
+        metadata,
+        conflicts: [...conflicts],
+        inserted: true,
+      };
+    });
   }
 
   async get(
@@ -310,6 +535,473 @@ export class PostgresMemoryRepository implements MemoryRepository {
       )
       .limit(1);
     return rows[0] === undefined ? null : rowToMemory(rows[0]);
+  }
+
+  async getProposal(
+    memoryId: string,
+    context: RepositoryContext = {},
+  ): Promise<ProposalRecord | null> {
+    const memoryRows = await this.#db
+      .select()
+      .from(memories)
+      .where(
+        and(
+          eq(memories.id, memoryId),
+          ...(context.workspaceId === undefined
+            ? []
+            : [eq(memories.workspaceId, context.workspaceId)]),
+        ),
+      )
+      .limit(1);
+    const memory = memoryRows[0];
+    if (memory === undefined) {
+      return null;
+    }
+    const proposalRows = await this.#db
+      .select()
+      .from(memoryProposals)
+      .where(
+        and(
+          eq(memoryProposals.memoryId, memoryId),
+          eq(memoryProposals.workspaceId, memory.workspaceId),
+        ),
+      )
+      .limit(1);
+    const metadata = proposalRows[0];
+    if (metadata === undefined) {
+      return null;
+    }
+    const conflictRows = await this.#db
+      .select()
+      .from(memoryConflicts)
+      .where(
+        and(
+          eq(memoryConflicts.proposalMemoryId, memoryId),
+          eq(memoryConflicts.workspaceId, memory.workspaceId),
+        ),
+      )
+      .orderBy(asc(memoryConflicts.createdAt), memoryConflicts.id);
+    return {
+      memory: rowToMemory(memory),
+      metadata: rowToProposalMetadata(metadata),
+      conflicts: conflictRows.map(rowToMemoryConflict),
+    };
+  }
+
+  async addProposalConflict(
+    conflictInput: MemoryConflict,
+    context: WorkspaceRepositoryContext,
+  ): Promise<InsertMemoryConflictResult> {
+    const conflict = MemoryConflictSchema.parse(conflictInput);
+    if (
+      conflict.workspaceId !== context.workspaceId ||
+      conflict.resolution !== null
+    ) {
+      throw new Error("Conflict workspace or resolution is invalid");
+    }
+
+    return this.#db.transaction(async (transaction) => {
+      const proposalRows = await transaction
+        .select({ id: memories.id, status: memories.status })
+        .from(memories)
+        .where(
+          and(
+            eq(memories.id, conflict.proposalMemoryId),
+            eq(memories.workspaceId, context.workspaceId),
+          ),
+        )
+        .limit(1)
+        .for("update");
+      const proposal = proposalRows[0];
+      if (proposal === undefined || proposal.status !== "proposed") {
+        throw new Error(`Proposed memory not found: ${conflict.proposalMemoryId}`);
+      }
+      const metadataRows = await transaction
+        .select({ decision: memoryProposals.decision })
+        .from(memoryProposals)
+        .where(
+          and(
+            eq(memoryProposals.memoryId, conflict.proposalMemoryId),
+            eq(memoryProposals.workspaceId, context.workspaceId),
+          ),
+        )
+        .limit(1);
+      if (metadataRows[0] === undefined || metadataRows[0].decision !== null) {
+        throw new Error(`Proposal has already been resolved: ${proposal.id}`);
+      }
+      const targetRows = await transaction
+        .select({ id: memories.id })
+        .from(memories)
+        .where(
+          and(
+            eq(memories.id, conflict.targetMemoryId),
+            eq(memories.workspaceId, context.workspaceId),
+            inArray(memories.status, ["active", "suppressed"]),
+          ),
+        )
+        .limit(1);
+      if (targetRows[0] === undefined) {
+        throw new Error(
+          `Conflict target is not reviewable: ${conflict.targetMemoryId}`,
+        );
+      }
+
+      const insertedRows = await transaction
+        .insert(memoryConflicts)
+        .values({
+          id: conflict.id,
+          workspaceId: context.workspaceId,
+          proposalMemoryId: conflict.proposalMemoryId,
+          targetMemoryId: conflict.targetMemoryId,
+          detector: conflict.detector,
+          severity: conflict.severity,
+          evidence: conflict.evidence,
+          createdAt: new Date(conflict.createdAt),
+        })
+        .onConflictDoNothing({
+          target: [
+            memoryConflicts.workspaceId,
+            memoryConflicts.proposalMemoryId,
+            memoryConflicts.targetMemoryId,
+            memoryConflicts.detector,
+          ],
+        })
+        .returning();
+      const inserted = insertedRows[0];
+      if (inserted !== undefined) {
+        return { conflict: rowToMemoryConflict(inserted), inserted: true };
+      }
+      const existingRows = await transaction
+        .select()
+        .from(memoryConflicts)
+        .where(
+          and(
+            eq(memoryConflicts.workspaceId, context.workspaceId),
+            eq(
+              memoryConflicts.proposalMemoryId,
+              conflict.proposalMemoryId,
+            ),
+            eq(memoryConflicts.targetMemoryId, conflict.targetMemoryId),
+            eq(memoryConflicts.detector, conflict.detector),
+          ),
+        )
+        .limit(1);
+      const existing = existingRows[0];
+      if (existing === undefined) {
+        throw new Error("Conflict insert raced without a stored edge");
+      }
+      return { conflict: rowToMemoryConflict(existing), inserted: false };
+    });
+  }
+
+  async reviewProposal(
+    inputValue: ReviewProposalDto,
+    context: WorkspaceRepositoryContext,
+  ): Promise<ReviewProposalResponse> {
+    const input = ReviewProposalDtoSchema.parse(inputValue);
+    return this.#db.transaction(async (transaction) => {
+      const proposalRows = await transaction
+        .select()
+        .from(memories)
+        .where(
+          and(
+            eq(memories.id, input.proposalMemoryId),
+            eq(memories.workspaceId, context.workspaceId),
+          ),
+        )
+        .limit(1)
+        .for("update");
+      const proposalRow = proposalRows[0];
+      if (proposalRow === undefined) {
+        throw new Error(`Proposal not found: ${input.proposalMemoryId}`);
+      }
+      const metadataRows = await transaction
+        .select()
+        .from(memoryProposals)
+        .where(
+          and(
+            eq(memoryProposals.memoryId, input.proposalMemoryId),
+            eq(memoryProposals.workspaceId, context.workspaceId),
+          ),
+        )
+        .limit(1)
+        .for("update");
+      const metadataRow = metadataRows[0];
+      if (metadataRow === undefined) {
+        throw new Error(`Proposal not found: ${input.proposalMemoryId}`);
+      }
+      if (metadataRow.decision !== null || proposalRow.status !== "proposed") {
+        throw new Error(
+          `Proposal has already been resolved: ${input.proposalMemoryId}`,
+        );
+      }
+
+      const conflictRows = await transaction
+        .select()
+        .from(memoryConflicts)
+        .where(
+          and(
+            eq(memoryConflicts.workspaceId, context.workspaceId),
+            eq(
+              memoryConflicts.proposalMemoryId,
+              input.proposalMemoryId,
+            ),
+            isNull(memoryConflicts.resolution),
+          ),
+        )
+        .orderBy(asc(memoryConflicts.createdAt), memoryConflicts.id)
+        .for("update");
+      const blockingConflicts = conflictRows.filter(
+        (conflict) => conflict.severity === "blocking",
+      );
+      if (
+        input.decision === "approve" &&
+        (proposalRow.supersedesMemoryId !== null ||
+          blockingConflicts.length > 0)
+      ) {
+        throw new Error(
+          "Blocked proposals cannot be approved without resolution",
+        );
+      }
+
+      const decidedAt = new Date();
+      let supersededRow: MemoryRow | undefined;
+      let targetId: string | null = null;
+      if (input.decision === "use_proposal") {
+        if (input.targetMemoryId === undefined) {
+          throw new Error(
+            "Using a proposal requires a deterministic conflict target",
+          );
+        }
+        targetId = input.targetMemoryId;
+        const deterministicConflict = conflictRows.find(
+          (conflict) =>
+            conflict.targetMemoryId === targetId &&
+            conflict.detector === "deterministic" &&
+            conflict.severity === "blocking",
+        );
+        if (deterministicConflict === undefined) {
+          throw new Error(
+            "Using a proposal requires an open deterministic blocking conflict",
+          );
+        }
+        if (
+          blockingConflicts.some(
+            (conflict) => conflict.targetMemoryId !== targetId,
+          )
+        ) {
+          throw new Error(
+            "Proposal has additional blocking conflicts that require keep_both or reject",
+          );
+        }
+        if (
+          proposalRow.supersedesMemoryId !== null &&
+          proposalRow.supersedesMemoryId !== targetId
+        ) {
+          throw new Error(
+            "Proposal lineage does not match the conflict target",
+          );
+        }
+        const targetRows = await transaction
+          .select()
+          .from(memories)
+          .where(
+            and(
+              eq(memories.id, targetId),
+              eq(memories.workspaceId, context.workspaceId),
+            ),
+          )
+          .limit(1)
+          .for("update");
+        const target = targetRows[0];
+        if (
+          target === undefined ||
+          (target.status !== "active" && target.status !== "suppressed")
+        ) {
+          throw new Error(`Conflict target is not replaceable: ${targetId}`);
+        }
+        const supersededRows = await transaction
+          .update(memories)
+          .set({
+            status: "superseded",
+            updatedAt: decidedAt,
+            suppressedAt: null,
+          })
+          .where(
+            and(
+              eq(memories.id, targetId),
+              eq(memories.workspaceId, context.workspaceId),
+              inArray(memories.status, ["active", "suppressed"]),
+            ),
+          )
+          .returning();
+        supersededRow = supersededRows[0];
+        if (supersededRow === undefined) {
+          throw new Error(`Conflict target changed during review: ${targetId}`);
+        }
+      }
+
+      const nextSupersedesMemoryId =
+        input.decision === "use_proposal" ? targetId : null;
+      const nextScope = input.scope ?? rowToMemory(proposalRow).scope;
+      const nextFingerprint = createMemoryFingerprint({
+        content: proposalRow.content,
+        scope: nextScope,
+        category: proposalRow.category,
+        supersedesMemoryId: nextSupersedesMemoryId,
+      });
+      const reviewedRows = await transaction
+        .update(memories)
+        .set({
+          status: input.decision === "reject" ? "deleted" : "active",
+          organization: nextScope.organization ?? null,
+          project: nextScope.project ?? null,
+          repo: nextScope.repo ?? null,
+          path: nextScope.path ?? null,
+          component: nextScope.component ?? null,
+          fingerprint: nextFingerprint,
+          supersedesMemoryId: nextSupersedesMemoryId,
+          updatedAt: decidedAt,
+          suppressedAt: null,
+          deletedAt: input.decision === "reject" ? decidedAt : null,
+        })
+        .where(
+          and(
+            eq(memories.id, input.proposalMemoryId),
+            eq(memories.workspaceId, context.workspaceId),
+            eq(memories.status, "proposed"),
+          ),
+        )
+        .returning();
+      const reviewedRow = reviewedRows[0];
+      if (reviewedRow === undefined) {
+        throw new Error(
+          `Proposal changed during review: ${input.proposalMemoryId}`,
+        );
+      }
+
+      const decidedMetadataRows = await transaction
+        .update(memoryProposals)
+        .set({
+          decision: input.decision,
+          reviewerId: input.reviewerId,
+          decisionReason: input.reason,
+          decidedAt,
+          decisionTargetMemoryId: targetId,
+        })
+        .where(
+          and(
+            eq(memoryProposals.memoryId, input.proposalMemoryId),
+            eq(memoryProposals.workspaceId, context.workspaceId),
+            isNull(memoryProposals.decision),
+          ),
+        )
+        .returning();
+      const decidedMetadata = decidedMetadataRows[0];
+      if (decidedMetadata === undefined) {
+        throw new Error(
+          `Proposal decision raced during review: ${input.proposalMemoryId}`,
+        );
+      }
+
+      if (conflictRows.length > 0) {
+        await transaction
+          .update(memoryConflicts)
+          .set({
+            resolution: input.decision,
+            resolvedAt: decidedAt,
+          })
+          .where(
+            and(
+              eq(memoryConflicts.workspaceId, context.workspaceId),
+              eq(
+                memoryConflicts.proposalMemoryId,
+                input.proposalMemoryId,
+              ),
+              isNull(memoryConflicts.resolution),
+            ),
+          );
+      }
+      const resolvedConflictRows = await transaction
+        .select()
+        .from(memoryConflicts)
+        .where(
+          and(
+            eq(memoryConflicts.workspaceId, context.workspaceId),
+            eq(
+              memoryConflicts.proposalMemoryId,
+              input.proposalMemoryId,
+            ),
+          ),
+        )
+        .orderBy(asc(memoryConflicts.createdAt), memoryConflicts.id);
+      return {
+        proposal: rowToMemory(reviewedRow),
+        metadata: rowToProposalMetadata(decidedMetadata),
+        conflicts: resolvedConflictRows.map(rowToMemoryConflict),
+        supersededMemory:
+          supersededRow === undefined ? null : rowToMemory(supersededRow),
+      };
+    });
+  }
+
+  async getWorkspaceLearningPolicy(
+    workspaceId: string,
+  ): Promise<WorkspaceLearningPolicy> {
+    const rows = await this.#db
+      .select({
+        workspaceId: workspaces.id,
+        learningMode: workspaces.learningMode,
+        llmConflictAnalysisEnabled: workspaces.llmConflictAnalysisEnabled,
+        updatedAt: workspaces.updatedAt,
+      })
+      .from(workspaces)
+      .where(eq(workspaces.id, workspaceId))
+      .limit(1);
+    const row = rows[0];
+    if (row === undefined) {
+      throw new Error(`Workspace not found: ${workspaceId}`);
+    }
+    return WorkspaceLearningPolicySchema.parse({
+      ...row,
+      updatedAt: row.updatedAt.toISOString(),
+    });
+  }
+
+  async updateWorkspaceLearningPolicy(
+    workspaceId: string,
+    updateInput: UpdateWorkspaceLearningPolicy,
+  ): Promise<WorkspaceLearningPolicy> {
+    const update = UpdateWorkspaceLearningPolicySchema.parse(updateInput);
+    const rows = await this.#db
+      .update(workspaces)
+      .set({
+        ...(update.learningMode === undefined
+          ? {}
+          : { learningMode: update.learningMode }),
+        ...(update.llmConflictAnalysisEnabled === undefined
+          ? {}
+          : {
+              llmConflictAnalysisEnabled:
+                update.llmConflictAnalysisEnabled,
+            }),
+        updatedAt: new Date(),
+      })
+      .where(eq(workspaces.id, workspaceId))
+      .returning({
+        workspaceId: workspaces.id,
+        learningMode: workspaces.learningMode,
+        llmConflictAnalysisEnabled: workspaces.llmConflictAnalysisEnabled,
+        updatedAt: workspaces.updatedAt,
+      });
+    const row = rows[0];
+    if (row === undefined) {
+      throw new Error(`Workspace not found: ${workspaceId}`);
+    }
+    return WorkspaceLearningPolicySchema.parse({
+      ...row,
+      updatedAt: row.updatedAt.toISOString(),
+    });
   }
 
   async list(
@@ -384,6 +1076,20 @@ export class PostgresMemoryRepository implements MemoryRepository {
     context: RepositoryContext = {},
   ): Promise<Memory | null> {
     const update = MemoryUpdateSchema.parse(updateInput);
+    if (update.status !== undefined) {
+      const current = await this.get(id, context);
+      if (current === null) {
+        return null;
+      }
+      if (
+        (current.status === "proposed" || update.status === "proposed") &&
+        update.status !== current.status
+      ) {
+        throw new Error(
+          "Proposed memories must be resolved with reviewProposal",
+        );
+      }
+    }
     const values: Partial<NewMemoryRow> = {
       updatedAt:
         update.updatedAt === undefined
@@ -681,7 +1387,7 @@ export class PostgresMemoryRepository implements MemoryRepository {
             and(
               eq(memories.workspaceId, workspaceId),
               eq(memories.fingerprint, replacement.fingerprint),
-              inArray(memories.status, ["active", "suppressed"]),
+              inArray(memories.status, FINGERPRINT_RESERVING_STATUSES),
             ),
           )
           .limit(1);
@@ -705,7 +1411,7 @@ export class PostgresMemoryRepository implements MemoryRepository {
         .values(memoryToRow(replacement))
         .onConflictDoNothing({
           target: [memories.workspaceId, memories.fingerprint],
-          where: inArray(memories.status, ["active", "suppressed"]),
+          where: inArray(memories.status, FINGERPRINT_RESERVING_STATUSES),
         })
         .returning();
       let replacementRow = replacementRows[0];
@@ -717,7 +1423,7 @@ export class PostgresMemoryRepository implements MemoryRepository {
             and(
               eq(memories.workspaceId, workspaceId),
               eq(memories.fingerprint, replacement.fingerprint),
-              inArray(memories.status, ["active", "suppressed"]),
+              inArray(memories.status, FINGERPRINT_RESERVING_STATUSES),
             ),
           )
           .limit(1);

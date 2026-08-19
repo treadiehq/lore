@@ -12,6 +12,7 @@ export interface RunCommandInput {
   args: readonly string[];
   cwd: string;
   timeoutMs: number;
+  environment?: NodeJS.ProcessEnv;
 }
 
 export interface ClaudePrintArgsInput {
@@ -30,6 +31,20 @@ export interface CodexExecArgsInput {
   model?: string;
   resumeThreadId?: string;
   ephemeral?: boolean;
+}
+
+export interface OpenCodeRunArgsInput {
+  prompt: string;
+  model: string;
+  sessionId?: string;
+  title?: string;
+}
+
+export interface OpenCodeRunResult {
+  sessionId: string;
+  text: string;
+  costUsd: number;
+  completedSteps: number;
 }
 
 export interface DevinCliResult {
@@ -66,7 +81,11 @@ export async function runCommand(
         {
           cwd: input.cwd,
           encoding: "utf8",
-          env: { ...process.env, NO_COLOR: "1" },
+          env: {
+            ...process.env,
+            ...input.environment,
+            NO_COLOR: "1",
+          },
           killSignal: "SIGKILL",
           maxBuffer: 4 * 1024 * 1024,
           timeout: input.timeoutMs,
@@ -225,6 +244,130 @@ export function buildCodexExecArgs(input: CodexExecArgsInput): string[] {
   ];
 }
 
+export function buildOpenCodeRunArgs(input: OpenCodeRunArgsInput): string[] {
+  const prompt = input.prompt.trim();
+  const model = input.model.trim();
+  const sessionId = input.sessionId?.trim();
+  const title = input.title?.trim();
+  if (prompt === "") {
+    throw new Error("An OpenCode acceptance prompt is required");
+  }
+  if (model === "" || !model.includes("/")) {
+    throw new Error(
+      "The OpenCode acceptance model must use provider/model format",
+    );
+  }
+  if (sessionId !== undefined && sessionId === "") {
+    throw new Error("The OpenCode session ID cannot be empty");
+  }
+  if (sessionId !== undefined && title !== undefined && title !== "") {
+    throw new Error("A resumed OpenCode session cannot set a new title");
+  }
+  return [
+    "run",
+    "--format",
+    "json",
+    "--model",
+    model,
+    ...(sessionId === undefined ? [] : ["--session", sessionId]),
+    ...(title === undefined || title === "" ? [] : ["--title", title]),
+    prompt,
+  ];
+}
+
+export function assertOpenCodeCliCapabilities(input: {
+  rootHelp: string;
+  runHelp: string;
+  sessionDeleteHelp: string;
+}): void {
+  const missing = [
+    !/\bopencode run\b/u.test(input.rootHelp) ? "run command" : undefined,
+    !/--format\b/u.test(input.runHelp) || !/\bjson\b/u.test(input.runHelp)
+      ? "JSON event output"
+      : undefined,
+    !/--session\b/u.test(input.runHelp) ? "session resume" : undefined,
+    !/\bdelete\b/u.test(input.sessionDeleteHelp)
+      ? "session cleanup"
+      : undefined,
+  ].filter((value): value is string => value !== undefined);
+  if (missing.length > 0) {
+    throw new Error(
+      `Installed OpenCode lacks ${missing.join(
+        ", ",
+      )}. Install a release that supports "opencode run --format json", "--session <id>", and "opencode session delete <id>" before running live acceptance.`,
+    );
+  }
+}
+
+export function parseOpenCodeRunJsonl(output: string): OpenCodeRunResult {
+  const sessionIds = new Set<string>();
+  const text: string[] = [];
+  let costUsd = 0;
+  let completedSteps = 0;
+  for (const [index, rawLine] of output.split(/\r?\n/u).entries()) {
+    const line = rawLine.trim();
+    if (line === "") {
+      continue;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch (error) {
+      throw new Error(`OpenCode JSONL line ${index + 1} is invalid JSON`, {
+        cause: error,
+      });
+    }
+    if (typeof parsed !== "object" || parsed === null) {
+      throw new Error(`OpenCode JSONL line ${index + 1} is not an event object`);
+    }
+    const event = parsed as Record<string, unknown>;
+    if (typeof event.sessionID === "string" && event.sessionID.trim() !== "") {
+      sessionIds.add(event.sessionID.trim());
+    }
+    const part =
+      typeof event.part === "object" && event.part !== null
+        ? (event.part as Record<string, unknown>)
+        : undefined;
+    if (
+      event.type === "text" &&
+      part?.type === "text" &&
+      typeof part.text === "string" &&
+      part.text.trim() !== ""
+    ) {
+      text.push(part.text.trim());
+    }
+    if (event.type === "step_finish" && part?.type === "step-finish") {
+      completedSteps += 1;
+      if (typeof part.cost === "number" && Number.isFinite(part.cost)) {
+        if (part.cost < 0) {
+          throw new Error("OpenCode reported a negative model cost");
+        }
+        costUsd += part.cost;
+      }
+    }
+  }
+  if (sessionIds.size === 0) {
+    throw new Error("OpenCode JSONL did not contain a sessionID");
+  }
+  if (sessionIds.size > 1) {
+    throw new Error("OpenCode JSONL contained multiple session IDs");
+  }
+  if (completedSteps === 0) {
+    throw new Error(
+      "OpenCode JSONL did not contain a completed step; upgrade OpenCode if run exits before final events",
+    );
+  }
+  if (text.length === 0) {
+    throw new Error("OpenCode JSONL did not contain assistant text");
+  }
+  return {
+    sessionId: [...sessionIds][0] as string,
+    text: text.join("\n"),
+    costUsd,
+    completedSteps,
+  };
+}
+
 export function parseCodexThreadId(output: string): string {
   const threadIds = new Set<string>();
   for (const [index, rawLine] of output.split(/\r?\n/u).entries()) {
@@ -339,19 +482,20 @@ export async function waitForLearning(input: {
   );
 }
 
-export function assertWorkspaceScoped(
+export function assertRepositoryScoped(
   learning: Learning,
+  repository: string,
   label: string,
 ): void {
   if (
     learning.scope.organization === undefined ||
     learning.scope.project !== undefined ||
-    learning.scope.repo !== undefined ||
+    learning.scope.repo !== repository ||
     learning.scope.path !== undefined ||
     learning.scope.component !== undefined
   ) {
     throw new Error(
-      `${label} learning ${learning.id} was not stored at workspace scope`,
+      `${label} learning ${learning.id} was not stored at repository scope for ${repository}`,
     );
   }
 }

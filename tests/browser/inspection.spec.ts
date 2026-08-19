@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 
 const currentLearningId = "00000000-0000-4000-8000-000000000002";
 const replacementLearningId = "00000000-0000-4000-8000-000000000003";
+const proposalLearningId = "00000000-0000-4000-8000-000000000004";
 
 test.beforeEach(async ({ context, request }) => {
   const response = await request.post("/api/e2e/reset");
@@ -17,6 +18,119 @@ test.beforeEach(async ({ context, request }) => {
       secure: false,
     },
   ]);
+});
+
+test("redirects authenticated users away from login and signup", async ({
+  page,
+}) => {
+  await page.goto("/login");
+  await expect(page).toHaveURL(/\/activity$/u);
+
+  await page.goto("/signup");
+  await expect(page).toHaveURL(/\/activity$/u);
+});
+
+test("signs in with a local owner password", async ({ context, page }) => {
+  await context.clearCookies();
+  await page.goto("/login");
+
+  await page.getByLabel("Email").fill("owner@example.com");
+  await page.getByLabel("Password").fill("correct horse battery staple");
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+
+  await expect(page).toHaveURL(/\/activity$/u);
+  await expect(page.getByText("owner@example.com").first()).toBeVisible();
+});
+
+test("claims the first owner without persisting the bootstrap token", async ({
+  context,
+  page,
+}) => {
+  await context.clearCookies();
+  const token = "b".repeat(64);
+  await page.goto("/setup");
+  expect(page.url()).not.toContain(token);
+
+  await page.getByLabel("Owner email").fill("owner@example.com");
+  await page.getByLabel("Owner password").fill("correct horse battery staple");
+  await page
+    .getByLabel("Confirm password")
+    .fill("correct horse battery staple");
+  await page.getByLabel("Bootstrap token").fill(token);
+  await page
+    .getByRole("button", { name: "Create owner account" })
+    .click();
+
+  await expect(page).toHaveURL(/\/activity$/u);
+  expect(page.url()).not.toContain(token);
+  await expect
+    .poll(() =>
+      page.evaluate((secret) => {
+        return (
+          Object.values(localStorage).includes(secret) ||
+          Object.values(sessionStorage).includes(secret)
+        );
+      }, token),
+    )
+    .toBe(false);
+});
+
+test("consumes a reset token from a fragment and removes it immediately", async ({
+  context,
+  page,
+}) => {
+  await context.clearCookies();
+  const token = "r".repeat(43);
+  await page.goto(`/auth/reset#token=${token}`);
+  await expect.poll(() => page.url()).not.toContain(token);
+
+  await page.locator("#reset-password").fill("replacement password value");
+  await page
+    .getByLabel("Confirm new password")
+    .fill("replacement password value");
+  await page.getByRole("button", { name: "Update password" }).click();
+
+  await expect(page).toHaveURL(/\/activity$/u);
+});
+
+test("updates workspace learning governance settings", async ({ page }) => {
+  await page.goto("/settings");
+
+  await page.getByLabel("Proposal only").check();
+  await page.getByRole("button", { name: "Save settings" }).click();
+
+  await expect(page.getByText("Workspace learning policy updated.")).toBeVisible();
+  await page.reload();
+  await expect(page.getByLabel("Proposal only")).toBeChecked();
+});
+
+test("reviews proposal evidence and promotes scope before activation", async ({
+  page,
+}) => {
+  await page.goto(`/memories/${proposalLearningId}`);
+
+  await expect(
+    page.getByRole("heading", { name: "Conflict evidence" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("link", {
+      name: "Use AccountStore for account writes.",
+    }).first(),
+  ).toBeVisible();
+  await page.getByLabel("Promote organization-wide").check();
+  await page
+    .getByLabel("Review reason")
+    .fill("This correction applies across all repositories.");
+  await page.getByRole("button", { name: "Use proposal" }).click();
+
+  await expect(page.getByText("The proposal is now active.")).toBeVisible();
+  await expect(
+    page.getByRole("heading", {
+      name: "Use BillingAccountStore for account writes.",
+    }),
+  ).toBeVisible();
+  await expect(page.getByText("Review proposal")).toHaveCount(0);
+  await expect(page.getByText("Active", { exact: true }).first()).toBeVisible();
 });
 
 test("filters learnings by exact URL-backed scope and resets paging", async ({

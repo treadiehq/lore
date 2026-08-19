@@ -1,6 +1,6 @@
 {
   "name": "@lore-co/devin-plugin",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": true,
   "type": "module",
   "main": "./dist/index.js",

@@ -113,7 +113,7 @@ const REPOSITORY_ROOT = resolve(
 );
 const DEFAULT_REPOSITORY = "treadiehq/retvrn-md";
 const DEFAULT_CLI_REPOSITORY = "treadiehq/lore";
-const DEFAULT_CLI_VERSION = "v0.1.3";
+const DEFAULT_CLI_VERSION = "v0.1.4";
 const CORRECTION_WORKFLOW: WorkflowRequirement = {
   name: "Lore review correction",
   path: ".github/workflows/lore-observe-correction.yml",
@@ -241,7 +241,7 @@ export function parseConfiguration(
     environment.GITHUB_PR_LIVE_CLI_VERSION?.trim() || DEFAULT_CLI_VERSION;
   if (!/^v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/u.test(cliVersion)) {
     throw new Error(
-      "GITHUB_PR_LIVE_CLI_VERSION must be a release tag such as v0.1.3",
+      "GITHUB_PR_LIVE_CLI_VERSION must be a release tag such as v0.1.4",
     );
   }
   return {

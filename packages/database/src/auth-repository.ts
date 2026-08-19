@@ -5,13 +5,16 @@ import {
   normalizeAuthEmail,
   type AuthenticatedWorkspace,
   type AuthSessionProfile,
+  type AuthUserRole,
   type AuthUserStatus,
   type WorkspaceStatus,
 } from "@lore-co/core";
-import { and, eq, gt, isNull } from "drizzle-orm";
+import { and, eq, gt, isNull, ne } from "drizzle-orm";
 import type { Database, DatabaseConnection } from "./index.js";
 import {
   authMagicLinks,
+  authOwnerBootstraps,
+  authPasswordResets,
   authSessions,
   authUsers,
   workspaces,
@@ -23,6 +26,8 @@ const identitySelection = {
   userId: authUsers.id,
   email: authUsers.email,
   userStatus: authUsers.status,
+  role: authUsers.role,
+  passwordHash: authUsers.passwordHash,
   workspaceId: workspaces.id,
   workspaceName: workspaces.name,
   organization: workspaces.organization,
@@ -33,15 +38,18 @@ interface SelectedIdentity {
   userId: string;
   email: string;
   userStatus: AuthUserStatus;
+  role: AuthUserRole;
+  passwordHash: string | null;
   workspaceId: string;
   workspaceName: string;
   organization: string;
   workspaceStatus: WorkspaceStatus;
 }
 
-export interface AuthUserRecord extends AuthSessionProfile {
+export interface AuthUserRecord extends Omit<AuthSessionProfile, "expiresAt"> {
   userStatus: AuthUserStatus;
   workspaceStatus: WorkspaceStatus;
+  passwordHash: string | null;
 }
 
 export interface AuthUserProvisionResult {
@@ -58,6 +66,38 @@ export interface IssueMagicLinkInput {
 
 export interface VerifyMagicLinkInput {
   tokenHash: string;
+  sessionId: string;
+  sessionTokenHash: string;
+  sessionExpiresAt: Date;
+}
+
+export interface CreateAuthSessionInput {
+  userId: string;
+  sessionId: string;
+  sessionTokenHash: string;
+  sessionExpiresAt: Date;
+}
+
+export interface ClaimFirstOwnerInput {
+  organization: string;
+  email: string;
+  passwordHash: string;
+  sessionId: string;
+  sessionTokenHash: string;
+  sessionExpiresAt: Date;
+}
+
+export interface IssuePasswordResetInput {
+  id: string;
+  email: string;
+  organization: string;
+  tokenHash: string;
+  expiresAt: Date;
+}
+
+export interface ConsumePasswordResetInput {
+  tokenHash: string;
+  passwordHash: string;
   sessionId: string;
   sessionTokenHash: string;
   sessionExpiresAt: Date;
@@ -82,25 +122,30 @@ function workspaceIdentifier(name: string, workspaceId: string): string {
 
 function recordFromIdentity(identity: SelectedIdentity): AuthUserRecord {
   return {
-    ...AuthSessionProfileSchema.parse({
-      userId: identity.userId,
-      email: identity.email,
-      workspaceId: identity.workspaceId,
-      workspaceName: identity.workspaceName,
-      organization: identity.organization,
-    }),
+    userId: identity.userId,
+    email: normalizeAuthEmail(identity.email),
+    workspaceId: identity.workspaceId,
+    workspaceName: identity.workspaceName,
+    organization: identity.organization,
+    role: identity.role,
     userStatus: identity.userStatus,
     workspaceStatus: identity.workspaceStatus,
+    passwordHash: identity.passwordHash,
   };
 }
 
-function profileFromIdentity(identity: SelectedIdentity): AuthSessionProfile {
+function profileFromIdentity(
+  identity: SelectedIdentity,
+  expiresAt: Date,
+): AuthSessionProfile {
   return AuthSessionProfileSchema.parse({
     userId: identity.userId,
     email: identity.email,
     workspaceId: identity.workspaceId,
     workspaceName: identity.workspaceName,
     organization: identity.organization,
+    role: identity.role,
+    expiresAt: expiresAt.toISOString(),
   });
 }
 
@@ -121,6 +166,303 @@ export class PostgresAuthRepository {
       .limit(1);
     const identity = rows[0];
     return identity === undefined ? null : recordFromIdentity(identity);
+  }
+
+  async isOwnerBootstrapRequired(organization: string): Promise<boolean> {
+    const workspaceRows = await this.#db
+      .select({ id: workspaces.id, status: workspaces.status })
+      .from(workspaces)
+      .where(eq(workspaces.organization, organization.trim()))
+      .limit(1);
+    const workspace = workspaceRows[0];
+    if (workspace === undefined || workspace.status !== "active") {
+      return false;
+    }
+    const [claims, owners] = await Promise.all([
+      this.#db
+        .select({ workspaceId: authOwnerBootstraps.workspaceId })
+        .from(authOwnerBootstraps)
+        .where(eq(authOwnerBootstraps.workspaceId, workspace.id))
+        .limit(1),
+      this.#db
+        .select({ id: authUsers.id })
+        .from(authUsers)
+        .where(
+          and(
+            eq(authUsers.workspaceId, workspace.id),
+            eq(authUsers.role, "owner"),
+          ),
+        )
+        .limit(1),
+    ]);
+    return claims[0] === undefined && owners[0] === undefined;
+  }
+
+  async claimFirstOwner(
+    input: ClaimFirstOwnerInput,
+  ): Promise<AuthSessionProfile | null> {
+    const email = normalizeAuthEmail(input.email);
+    return this.#db.transaction(async (transaction) => {
+      const workspaceRows = await transaction
+        .select()
+        .from(workspaces)
+        .where(eq(workspaces.organization, input.organization.trim()))
+        .limit(1)
+        .for("update");
+      const workspace = workspaceRows[0];
+      if (workspace === undefined || workspace.status !== "active") {
+        return null;
+      }
+      const claims = await transaction
+        .select({ workspaceId: authOwnerBootstraps.workspaceId })
+        .from(authOwnerBootstraps)
+        .where(eq(authOwnerBootstraps.workspaceId, workspace.id))
+        .limit(1);
+      const owners = await transaction
+        .select({ id: authUsers.id })
+        .from(authUsers)
+        .where(
+          and(
+            eq(authUsers.workspaceId, workspace.id),
+            eq(authUsers.role, "owner"),
+          ),
+        )
+        .limit(1);
+      if (claims[0] !== undefined || owners[0] !== undefined) {
+        return null;
+      }
+      const existingEmail = await transaction
+        .select({ id: authUsers.id })
+        .from(authUsers)
+        .where(eq(authUsers.email, email))
+        .limit(1);
+      if (existingEmail[0] !== undefined) {
+        return null;
+      }
+
+      const userId = randomUUID();
+      const insertedUsers = await transaction
+        .insert(authUsers)
+        .values({
+          id: userId,
+          workspaceId: workspace.id,
+          email,
+          status: "active",
+          role: "owner",
+          passwordHash: input.passwordHash,
+        })
+        .onConflictDoNothing({ target: authUsers.email })
+        .returning({ id: authUsers.id });
+      if (insertedUsers[0] === undefined) {
+        return null;
+      }
+      await transaction.insert(authOwnerBootstraps).values({
+        workspaceId: workspace.id,
+        claimedByUserId: userId,
+      });
+      await transaction.insert(authSessions).values({
+        id: input.sessionId,
+        userId,
+        tokenHash: input.sessionTokenHash,
+        expiresAt: input.sessionExpiresAt,
+      });
+      return profileFromIdentity(
+        {
+          userId,
+          email,
+          userStatus: "active",
+          role: "owner",
+          passwordHash: input.passwordHash,
+          workspaceId: workspace.id,
+          workspaceName: workspace.name,
+          organization: workspace.organization,
+          workspaceStatus: workspace.status,
+        },
+        input.sessionExpiresAt,
+      );
+    });
+  }
+
+  async createSessionForUser(
+    input: CreateAuthSessionInput,
+  ): Promise<AuthSessionProfile | null> {
+    return this.#db.transaction(async (transaction) => {
+      const identities = await transaction
+        .select(identitySelection)
+        .from(authUsers)
+        .innerJoin(workspaces, eq(authUsers.workspaceId, workspaces.id))
+        .where(eq(authUsers.id, input.userId))
+        .limit(1);
+      const identity = identities[0];
+      if (
+        identity === undefined ||
+        identity.userStatus !== "active" ||
+        identity.workspaceStatus !== "active"
+      ) {
+        return null;
+      }
+      await transaction.insert(authSessions).values({
+        id: input.sessionId,
+        userId: input.userId,
+        tokenHash: input.sessionTokenHash,
+        expiresAt: input.sessionExpiresAt,
+      });
+      return profileFromIdentity(identity, input.sessionExpiresAt);
+    });
+  }
+
+  async changeOwnerPassword(input: {
+    userId: string;
+    workspaceId: string;
+    sessionId: string;
+    currentPasswordHash: string;
+    newPasswordHash: string;
+  }): Promise<boolean> {
+    return this.#db.transaction(async (transaction) => {
+      const updated = await transaction
+        .update(authUsers)
+        .set({ passwordHash: input.newPasswordHash, updatedAt: new Date() })
+        .where(
+          and(
+            eq(authUsers.id, input.userId),
+            eq(authUsers.workspaceId, input.workspaceId),
+            eq(authUsers.role, "owner"),
+            eq(authUsers.status, "active"),
+            eq(authUsers.passwordHash, input.currentPasswordHash),
+          ),
+        )
+        .returning({ id: authUsers.id });
+      if (updated[0] === undefined) {
+        return false;
+      }
+      await transaction
+        .update(authSessions)
+        .set({ revokedAt: new Date() })
+        .where(
+          and(
+            eq(authSessions.userId, input.userId),
+            ne(authSessions.id, input.sessionId),
+            isNull(authSessions.revokedAt),
+          ),
+        );
+      return true;
+    });
+  }
+
+  async issuePasswordReset(
+    input: IssuePasswordResetInput,
+  ): Promise<boolean> {
+    const email = normalizeAuthEmail(input.email);
+    return this.#db.transaction(async (transaction) => {
+      const identities = await transaction
+        .select(identitySelection)
+        .from(authUsers)
+        .innerJoin(workspaces, eq(authUsers.workspaceId, workspaces.id))
+        .where(
+          and(
+            eq(authUsers.email, email),
+            eq(workspaces.organization, input.organization.trim()),
+          ),
+        )
+        .limit(1)
+        .for("update");
+      const identity = identities[0];
+      if (
+        identity === undefined ||
+        identity.role !== "owner" ||
+        identity.userStatus !== "active" ||
+        identity.workspaceStatus !== "active"
+      ) {
+        return false;
+      }
+      const now = new Date();
+      await transaction
+        .update(authPasswordResets)
+        .set({ revokedAt: now })
+        .where(
+          and(
+            eq(authPasswordResets.userId, identity.userId),
+            isNull(authPasswordResets.consumedAt),
+            isNull(authPasswordResets.revokedAt),
+          ),
+        );
+      await transaction.insert(authPasswordResets).values({
+        id: input.id,
+        userId: identity.userId,
+        tokenHash: input.tokenHash,
+        expiresAt: input.expiresAt,
+      });
+      return true;
+    });
+  }
+
+  async consumePasswordReset(
+    input: ConsumePasswordResetInput,
+  ): Promise<AuthSessionProfile | null> {
+    try {
+      return await this.#db.transaction(async (transaction) => {
+        const now = new Date();
+        const consumed = await transaction
+          .update(authPasswordResets)
+          .set({ consumedAt: now })
+          .where(
+            and(
+              eq(authPasswordResets.tokenHash, input.tokenHash),
+              isNull(authPasswordResets.consumedAt),
+              isNull(authPasswordResets.revokedAt),
+              gt(authPasswordResets.expiresAt, now),
+            ),
+          )
+          .returning({ userId: authPasswordResets.userId });
+        const reset = consumed[0];
+        if (reset === undefined) {
+          return null;
+        }
+        const identities = await transaction
+          .select(identitySelection)
+          .from(authUsers)
+          .innerJoin(workspaces, eq(authUsers.workspaceId, workspaces.id))
+          .where(eq(authUsers.id, reset.userId))
+          .limit(1);
+        const identity = identities[0];
+        if (
+          identity === undefined ||
+          identity.role !== "owner" ||
+          identity.userStatus !== "active" ||
+          identity.workspaceStatus !== "active"
+        ) {
+          throw new InactiveAuthIdentityError();
+        }
+        await transaction
+          .update(authUsers)
+          .set({ passwordHash: input.passwordHash, updatedAt: now })
+          .where(eq(authUsers.id, reset.userId));
+        await transaction
+          .update(authSessions)
+          .set({ revokedAt: now })
+          .where(
+            and(
+              eq(authSessions.userId, reset.userId),
+              isNull(authSessions.revokedAt),
+            ),
+          );
+        await transaction.insert(authSessions).values({
+          id: input.sessionId,
+          userId: reset.userId,
+          tokenHash: input.sessionTokenHash,
+          expiresAt: input.sessionExpiresAt,
+        });
+        return profileFromIdentity(
+          { ...identity, passwordHash: input.passwordHash },
+          input.sessionExpiresAt,
+        );
+      });
+    } catch (error) {
+      if (error instanceof InactiveAuthIdentityError) {
+        return null;
+      }
+      throw error;
+    }
   }
 
   async findOrCreateSignupUser(input: {
@@ -171,6 +513,7 @@ export class PostgresAuthRepository {
                 workspaceId: bootstrap.id,
                 email,
                 status: "active",
+                role: "owner",
               })
               .onConflictDoNothing({ target: authUsers.email })
               .returning({ id: authUsers.id });
@@ -185,6 +528,8 @@ export class PostgresAuthRepository {
                   userId,
                   email,
                   userStatus: "active",
+                  role: "owner",
+                  passwordHash: null,
                   workspaceId: bootstrap.id,
                   workspaceName: organizationName,
                   organization: bootstrap.organization,
@@ -224,6 +569,7 @@ export class PostgresAuthRepository {
           workspaceId,
           email,
           status: "active",
+          role: "owner",
         })
         .onConflictDoNothing({ target: authUsers.email })
         .returning({ id: authUsers.id });
@@ -345,7 +691,7 @@ export class PostgresAuthRepository {
           tokenHash: input.sessionTokenHash,
           expiresAt: input.sessionExpiresAt,
         });
-        return profileFromIdentity(identity);
+        return profileFromIdentity(identity, input.sessionExpiresAt);
       });
     } catch (error) {
       if (error instanceof InactiveAuthIdentityError) {
@@ -375,6 +721,7 @@ export class PostgresAuthRepository {
       .returning({
         sessionId: authSessions.id,
         userId: authSessions.userId,
+        expiresAt: authSessions.expiresAt,
       });
     const session = sessions[0];
     if (session === undefined) {
@@ -405,6 +752,8 @@ export class PostgresAuthRepository {
       userId: identity.userId,
       email: identity.email,
       workspaceName: identity.workspaceName,
+      role: identity.role,
+      sessionExpiresAt: session.expiresAt.toISOString(),
     });
   }
 

@@ -84,6 +84,106 @@ describe("hybrid retrieval", () => {
     expect(store.searchCalls[0]?.workspaceId).toBe(workspaceId);
   });
 
+  it.each(["claude", "codex", "opencode"])(
+    "applies strongly semantic organization-only memory across repos for %s",
+    async (agent) => {
+      const repository = new InMemoryMemoryRepository();
+      const engine = new SharedMemoryEngine({
+        repository,
+        extractor: new HeuristicMemoryExtractor(),
+        retriever: new ScopedKeywordMemoryRetriever(repository),
+      });
+      const remembered = await engine.remember({
+        content:
+          "Settlement processing is asynchronous and runs in a background worker.",
+        scope: { organization: "acme" },
+        source: { agent: "human", workspaceId },
+      });
+      const store = new FakeSemanticStore();
+      store.memories = [remembered.memory];
+      const retriever = new HybridMemoryRetriever(
+        new ScopedKeywordMemoryRetriever(repository),
+        {
+          model: "test-embedding",
+          dimensions: EMBEDDING_DIMENSIONS,
+          embed: async () => Array(EMBEDDING_DIMENSIONS).fill(0.25),
+        },
+        store,
+      );
+
+      const result = await retriever.retrieve(
+        {
+          agent,
+          organization: "acme",
+          repo: "invoicing",
+          task: "Explain why invoices finish later in a background job",
+        },
+        { workspaceId },
+      );
+
+      expect(result).toMatchObject([
+        {
+          memory: { id: remembered.memory.id },
+          reasons: expect.arrayContaining(["semantic"]),
+        },
+      ]);
+    },
+  );
+
+  it("rejects semantic candidates from a different repository scope", async () => {
+    const { repository, memory } = await memoryFixture();
+    const store = new FakeSemanticStore();
+    store.memories = [memory];
+    const retriever = new HybridMemoryRetriever(
+      new ScopedKeywordMemoryRetriever(repository),
+      {
+        model: "test-embedding",
+        dimensions: EMBEDDING_DIMENSIONS,
+        embed: async () => Array(EMBEDDING_DIMENSIONS).fill(0.25),
+      },
+      store,
+    );
+
+    await expect(
+      retriever.retrieve(
+        {
+          agent: "claude",
+          organization: "acme",
+          repo: "invoicing",
+          task: "Explain why invoices finish later in a background job",
+        },
+        { workspaceId },
+      ),
+    ).resolves.toEqual([]);
+  });
+
+  it("drops proposed semantic candidates even when a store returns them", async () => {
+    const { repository, memory } = await memoryFixture();
+    const store = new FakeSemanticStore();
+    store.memories = [{ ...memory, status: "proposed" }];
+    const retriever = new HybridMemoryRetriever(
+      new ScopedKeywordMemoryRetriever(repository),
+      {
+        model: "test-embedding",
+        dimensions: EMBEDDING_DIMENSIONS,
+        embed: async () => Array(EMBEDDING_DIMENSIONS).fill(0.25),
+      },
+      store,
+    );
+
+    await expect(
+      retriever.retrieve(
+        {
+          agent: "claude",
+          organization: "acme",
+          repo: "billing",
+          task: "Explain why invoices finish later in a background job",
+        },
+        { workspaceId },
+      ),
+    ).resolves.toEqual([]);
+  });
+
   it("falls back to lexical results when embeddings fail", async () => {
     const { repository, memory } = await memoryFixture();
     const provider: EmbeddingProvider = {

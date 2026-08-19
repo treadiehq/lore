@@ -10,7 +10,7 @@ import {
 import { DevinApiClient } from "../packages/cli/src/devin-client.js";
 import {
   assertLearningSource,
-  assertWorkspaceScoped,
+  assertRepositoryScoped,
   boundedInteger,
   buildClaudePrintArgs,
   buildCodexExecArgs,
@@ -269,7 +269,11 @@ async function main(): Promise<void> {
       pollIntervalMs,
     });
     cleanupLearningIds.add(claudeLearning.id);
-    assertWorkspaceScoped(claudeLearning, "Claude chain seed");
+    assertRepositoryScoped(
+      claudeLearning,
+      repository,
+      "Claude chain seed",
+    );
     assertLearningSource(claudeLearning, {
       agent: "claude",
       sessionId: claudeSessionId,
@@ -291,7 +295,7 @@ async function main(): Promise<void> {
     if (claudeObservation.event.type !== "observation") {
       throw new Error("Claude seed was not recorded as an observation");
     }
-    progress("Claude observation audited at workspace scope");
+    progress("Claude observation audited at repository scope");
 
     progress("Customer lore devin start is receiving Claude context");
     const startResult = await runCustomerCli(
@@ -417,7 +421,11 @@ async function main(): Promise<void> {
       pollIntervalMs,
     });
     cleanupLearningIds.add(devinLearning.id);
-    assertWorkspaceScoped(devinLearning, "Devin chain correction");
+    assertRepositoryScoped(
+      devinLearning,
+      repository,
+      "Devin chain correction",
+    );
     assertLearningSource(devinLearning, {
       agent: "devin",
       sessionId: devinSessionId,

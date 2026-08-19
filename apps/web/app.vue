@@ -27,7 +27,9 @@ const isAuthPage = computed(
   () =>
     route.path === "/login" ||
     route.path === "/signup" ||
-    route.path === "/auth/verify",
+    route.path === "/setup" ||
+    route.path === "/auth/verify" ||
+    route.path === "/auth/reset",
 );
 const showApplicationShell = computed(
   () => !isAuthPage.value && session.value !== null,
@@ -36,6 +38,7 @@ const navigation = [
   { label: "Activity", to: "/activity", description: "Capture and application history" },
   { label: "Learnings", to: "/memories", description: "Team knowledge" },
   { label: "Connect", to: "/connect", description: "Agent access and tokens" },
+  { label: "Settings", to: "/settings", description: "Learning governance policy" },
 ] as const;
 
 watch(
@@ -159,7 +162,7 @@ async function signOut(): Promise<void> {
                 />
               </svg>
               <svg
-                v-else
+                v-else-if="item.to === '/connect'"
                 viewBox="0 0 20 20"
                 fill="none"
                 class="size-4 shrink-0"
@@ -171,6 +174,20 @@ async function signOut(): Promise<void> {
                   stroke-width="1.5"
                   stroke-linecap="round"
                   stroke-linejoin="round"
+                />
+              </svg>
+              <svg
+                v-else
+                viewBox="0 0 20 20"
+                fill="none"
+                class="size-4 shrink-0"
+                aria-hidden="true"
+              >
+                <path
+                  d="M10 6.75A3.25 3.25 0 1 0 10 13.25 3.25 3.25 0 0 0 10 6.75Zm0-3.5v1.5m0 10.5v1.5m6.75-6.75h-1.5M4.75 10h-1.5m11.52-4.77-1.06 1.06M6.29 13.71l-1.06 1.06m9.54 0-1.06-1.06M6.29 6.29 5.23 5.23"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  stroke-linecap="round"
                 />
               </svg>
               <span class="truncate font-medium">{{ item.label }}</span>

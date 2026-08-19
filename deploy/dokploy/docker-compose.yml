@@ -1,0 +1,132 @@
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.6-pg18
+    environment:
+      POSTGRES_DB: lore
+      POSTGRES_USER: lore
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'pg_isready -h 127.0.0.1 -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"',
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  migrate:
+    image: ghcr.io/treadiehq/lore-api:0.1.4
+    command:
+      - node
+      - node_modules/@lore-co/database/dist/migrate.js
+    environment:
+      DATABASE_URL: postgresql://lore:${POSTGRES_PASSWORD}@postgres:5432/lore
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    image: ghcr.io/treadiehq/lore-api:0.1.4
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://lore:${POSTGRES_PASSWORD}@postgres:5432/lore
+      API_HOST: 0.0.0.0
+      API_PORT: "3001"
+      API_JSON_BODY_LIMIT: ${API_JSON_BODY_LIMIT:-1mb}
+      API_RATE_LIMIT_PER_MINUTE: ${API_RATE_LIMIT_PER_MINUTE:-120}
+      NUXT_ORIGIN: ${WEB_ORIGIN}
+      LORE_SERVER_VERSION: 0.1.4
+      LORE_SERVER_REVISION: ${LORE_SERVER_REVISION:-}
+      LORE_WORKSPACE_TOKEN: ${LORE_WORKSPACE_TOKEN}
+      LORE_WORKSPACE_ORGANIZATION: ${LORE_WORKSPACE_ORGANIZATION:-local}
+      LORE_WORKSPACE_NAME: ${LORE_WORKSPACE_NAME:-Lore}
+      AUTH_MODE: local_owner
+      AUTH_EMAIL_MODE: disabled
+      AUTH_WEB_ORIGIN: ${WEB_ORIGIN}
+      LORE_OWNER_BOOTSTRAP_TOKEN: ${LORE_OWNER_BOOTSTRAP_TOKEN}
+      AUTH_EMAIL_FROM: ${AUTH_EMAIL_FROM:-}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      AUTH_MAGIC_LINK_TTL_MINUTES: ${AUTH_MAGIC_LINK_TTL_MINUTES:-15}
+      AUTH_PASSWORD_RESET_TTL_MINUTES: ${AUTH_PASSWORD_RESET_TTL_MINUTES:-15}
+      AUTH_SESSION_TTL_DAYS: ${AUTH_SESSION_TTL_DAYS:-30}
+      DEVIN_POLLING_ENABLED: ${DEVIN_POLLING_ENABLED:-false}
+      DEVIN_API_KEY: ${DEVIN_API_KEY:-}
+      DEVIN_ORG_ID: ${DEVIN_ORG_ID:-}
+      DEVIN_REPOSITORY_ALLOWLIST: ${DEVIN_REPOSITORY_ALLOWLIST:-}
+      DEVIN_POLL_INTERVAL_MS: ${DEVIN_POLL_INTERVAL_MS:-15000}
+      DEVIN_REQUEST_TIMEOUT_MS: ${DEVIN_REQUEST_TIMEOUT_MS:-10000}
+      DEVIN_POLL_BATCH_SIZE: ${DEVIN_POLL_BATCH_SIZE:-25}
+      EXTRACTOR_PROVIDER: ${EXTRACTOR_PROVIDER:-heuristic}
+      EXTRACTOR_MIN_CONFIDENCE: ${EXTRACTOR_MIN_CONFIDENCE:-0.8}
+      EXTRACTOR_MODEL: ${EXTRACTOR_MODEL:-}
+      EXTRACTOR_BASE_URL: ${EXTRACTOR_BASE_URL:-}
+      EXTRACTOR_API_KEY: ${EXTRACTOR_API_KEY:-}
+      RETRIEVAL_MODE: ${RETRIEVAL_MODE:-auto}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-https://api.openai.com/v1}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1536}
+      EMBEDDING_TIMEOUT_MS: ${EMBEDDING_TIMEOUT_MS:-5000}
+      SEMANTIC_MIN_SIMILARITY: ${SEMANTIC_MIN_SIMILARITY:-0.65}
+      CONTEXT_MAX_ITEMS: ${CONTEXT_MAX_ITEMS:-10}
+      CONTEXT_MAX_CHARACTERS: ${CONTEXT_MAX_CHARACTERS:-12000}
+      CONTEXT_MAX_ESTIMATED_TOKENS: ${CONTEXT_MAX_ESTIMATED_TOKENS:-4000}
+    expose:
+      - "3001"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3001/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  web:
+    image: ghcr.io/treadiehq/lore-web:0.1.4
+    environment:
+      HOST: 0.0.0.0
+      PORT: "3000"
+      NITRO_HOST: 0.0.0.0
+      NITRO_PORT: "3000"
+      NUXT_LORE_API_URL: http://api:3001
+      NUXT_AUTH_COOKIE_NAME: ${NUXT_AUTH_COOKIE_NAME:-lore_session}
+      NUXT_AUTH_COOKIE_SECURE: "true"
+      NUXT_PUBLIC_API_BASE_URL: /api/lore
+      NUXT_PUBLIC_LORE_CONNECTOR_API_URL: ${API_ORIGIN}
+      NUXT_PUBLIC_LORE_INSTALL_URL: ${NUXT_PUBLIC_LORE_INSTALL_URL:-https://raw.githubusercontent.com/treadiehq/lore/main/scripts/install.sh}
+    expose:
+      - "3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    restart: unless-stopped
+
+volumes:
+  postgres-data:

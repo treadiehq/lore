@@ -22,7 +22,7 @@ const installCommand = computed(
     `curl -fsSL ${shellQuote(String(runtimeConfig.public.loreInstallUrl))} | bash`,
 );
 
-const claudeConnectCommand = computed(() => {
+function explicitConnectCommand(agent: "claude" | "codex" | "opencode"): string {
   const apiUrl = String(runtimeConfig.public.connectorApiUrl).replace(/\/+$/u, "");
   const dashboardUrl = import.meta.client ? window.location.origin : "";
   const dashboardOption =
@@ -30,8 +30,8 @@ const claudeConnectCommand = computed(() => {
       ? ""
       : ` --dashboard-url ${shellQuote(dashboardUrl)}`;
   const token = props.workspaceToken ?? "<workspace-token>";
-  return `lore connect --url ${shellQuote(apiUrl)}${dashboardOption} --token ${shellQuote(token)} --agent claude`;
-});
+  return `lore connect --url ${shellQuote(apiUrl)}${dashboardOption} --token ${shellQuote(token)} --agent ${agent}`;
+}
 
 const agentCommands = computed(() => [
   {
@@ -41,7 +41,7 @@ const agentCommands = computed(() => [
   },
   {
     title: "Connect Claude Code",
-    command: claudeConnectCommand.value,
+    command: explicitConnectCommand("claude"),
     description:
       props.workspaceToken === null
         ? "Create a setup command on this page to replace the token placeholder."
@@ -51,6 +51,27 @@ const agentCommands = computed(() => [
     title: "Start Claude Code",
     command: "claude",
     description: "Start Claude normally after Lore is connected.",
+  },
+  {
+    title: "Connect Codex",
+    command: explicitConnectCommand("codex"),
+    description: "Connect only Codex with Lore command hooks.",
+  },
+  {
+    title: "Start Codex",
+    command: "codex",
+    description: "Start Codex normally after Lore is connected.",
+  },
+  {
+    title: "Connect OpenCode",
+    command: explicitConnectCommand("opencode"),
+    description:
+      "Add only the Lore plugin to your existing OpenCode configuration.",
+  },
+  {
+    title: "Start OpenCode",
+    command: "opencode",
+    description: "Start OpenCode normally after Lore is connected.",
   },
   {
     title: "Check Devin access",
@@ -277,8 +298,8 @@ onBeforeUnmount(() => {
                   <div>
                     <p class="text-sm font-medium text-lore-text">Use your agent normally</p>
                     <p class="mt-0.5 text-xs leading-5 text-lore-text-secondary">
-                      Lore works through installed Codex and Claude hooks. New
-                      events appear in Activity.
+                      Lore uses installed Claude/Codex hooks and the OpenCode
+                      plugin. New events appear in Activity.
                     </p>
                   </div>
                 </li>
@@ -377,7 +398,7 @@ onBeforeUnmount(() => {
                   <p class="mt-2 text-xs leading-5 text-lore-text-secondary">
                     Run <code>lore status</code>. If the agent was installed
                     later, create and run a new setup command; reconnecting is
-                    safe and does not duplicate hooks.
+                    safe and does not duplicate hooks or the OpenCode plugin.
                   </p>
                 </details>
               </div>

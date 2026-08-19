@@ -16,6 +16,8 @@ import { WorkspaceAuthGuard } from "./common/workspace-auth.guard.js";
 import { TurnModule } from "./turn/turn.module.js";
 import { ActivityModule } from "./activity/activity.module.js";
 import { WorkspaceTokenModule } from "./workspace-token/workspace-token.module.js";
+import { WorkspacePolicyModule } from "./workspace-policy/workspace-policy.module.js";
+import { WorkspaceIdentityModule } from "./workspace-identity/workspace-identity.module.js";
 
 @Module({
   imports: [
@@ -31,6 +33,8 @@ import { WorkspaceTokenModule } from "./workspace-token/workspace-token.module.j
     DevinConnectorModule,
     ActivityModule,
     WorkspaceTokenModule,
+    WorkspacePolicyModule,
+    WorkspaceIdentityModule,
     McpModule,
   ],
   controllers: [HealthController],

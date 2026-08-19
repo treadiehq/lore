@@ -5,14 +5,6 @@ import type { NestExpressApplication } from "@nestjs/platform-express";
 import { AppModule } from "./app.module.js";
 import { apiDeploymentConfig } from "./common/deployment-config.js";
 
-function apiPort(value = process.env.API_PORT ?? process.env.PORT): number {
-  const port = value === undefined ? 3004 : Number(value);
-  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
-    throw new Error(`API_PORT must be an integer from 1 to 65535, got "${value}"`);
-  }
-  return port;
-}
-
 async function bootstrap(): Promise<void> {
   const deployment = apiDeploymentConfig();
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
@@ -20,7 +12,7 @@ async function bootstrap(): Promise<void> {
   });
   app.disable("x-powered-by");
   app.useBodyParser("json", {
-    limit: process.env.API_JSON_BODY_LIMIT?.trim() || "1mb",
+    limit: deployment.server.jsonBodyLimit,
   });
   if (deployment.corsOrigins.length > 0) {
     app.enableCors({
@@ -38,10 +30,7 @@ async function bootstrap(): Promise<void> {
   }
   app.enableShutdownHooks();
 
-  await app.listen(
-    apiPort(),
-    process.env.API_HOST?.trim() || "0.0.0.0",
-  );
+  await app.listen(deployment.server.port, deployment.server.host);
 }
 
 void bootstrap();

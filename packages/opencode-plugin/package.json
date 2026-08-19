@@ -1,0 +1,47 @@
+{
+  "name": "@lore-co/opencode",
+  "version": "0.1.4",
+  "description": "Fail-open Lore memory integration for OpenCode",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "prepack": "pnpm run build"
+  },
+  "keywords": [
+    "lore",
+    "opencode",
+    "memory",
+    "plugin"
+  ],
+  "license": "FSL-1.1-MIT",
+  "dependencies": {
+    "@lore-co/adapter-generic": "workspace:*",
+    "@lore-co/core": "workspace:*",
+    "@lore-co/sdk": "workspace:*",
+    "@opencode-ai/plugin": "^1.18.18"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10"
+  }
+}

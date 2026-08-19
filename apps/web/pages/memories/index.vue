@@ -135,6 +135,10 @@ const {
   () => client.listLearnings(listInput.value),
   { watch: [listInput] },
 );
+const { data: proposalQueue } = await useAsyncData(
+  "proposal-queue-count",
+  () => client.listLearnings({ status: "proposed", limit: 1 }),
+);
 
 async function applyFilters(): Promise<void> {
   const query = queryDraft.value.trim();
@@ -256,9 +260,23 @@ async function goToPage(target: number): Promise<void> {
           Review the durable statements Lore can apply to relevant work.
         </p>
       </div>
-      <NuxtLink to="/memories/new" class="lore-button-primary self-start sm:self-auto">
-        New learning
-      </NuxtLink>
+      <div class="flex flex-wrap gap-2 self-start sm:self-auto">
+        <NuxtLink
+          to="/memories?status=proposed"
+          class="lore-button-secondary"
+        >
+          Proposal queue
+          <span
+            v-if="proposalQueue"
+            class="ml-1 rounded bg-lore-raised px-1.5 py-0.5 text-xs tabular-nums"
+          >
+            {{ proposalQueue.total }}
+          </span>
+        </NuxtLink>
+        <NuxtLink to="/memories/new" class="lore-button-primary">
+          New learning
+        </NuxtLink>
+      </div>
     </header>
 
     <form

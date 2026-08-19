@@ -16,6 +16,7 @@ import {
   type DatabaseConnection,
 } from "@lore-co/database";
 import type { MemoryRepository } from "@lore-co/core";
+import { apiDeploymentConfig } from "../common/deployment-config.js";
 import {
   AUTH_REPOSITORY,
   DATABASE_CONNECTION,
@@ -56,21 +57,14 @@ class WorkspaceBootstrap implements OnApplicationBootstrap {
   }
 
   async onApplicationBootstrap(): Promise<void> {
-    const token = process.env.LORE_WORKSPACE_TOKEN?.trim();
-    const organization = process.env.LORE_WORKSPACE_ORGANIZATION?.trim();
-    if (token === undefined && organization === undefined) {
+    const bootstrap = apiDeploymentConfig().workspaceBootstrap;
+    if (bootstrap === null) {
       return;
     }
-    if (token === undefined || organization === undefined) {
-      throw new Error(
-        "LORE_WORKSPACE_TOKEN and LORE_WORKSPACE_ORGANIZATION must be configured together",
-      );
-    }
     await this.#repository.ensureWorkspaceToken({
-      token,
-      organization,
-      workspaceName:
-        process.env.LORE_WORKSPACE_NAME?.trim() || organization,
+      token: bootstrap.token,
+      organization: bootstrap.organization,
+      workspaceName: bootstrap.name,
       tokenName: "environment-bootstrap",
     });
   }

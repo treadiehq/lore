@@ -1,13 +1,35 @@
 import { describe, expect, it } from "vitest";
+import type { Learning } from "../packages/sdk/src/index.js";
 import {
+  assertOpenCodeCliCapabilities,
+  assertRepositoryScoped,
   boundedInteger,
   buildClaudePrintArgs,
   buildCodexExecArgs,
+  buildOpenCodeRunArgs,
   milliseconds,
   parseCodexThreadId,
   parseDevinCliResult,
+  parseOpenCodeRunJsonl,
   positiveNumberString,
 } from "../scripts/live-agent-acceptance-helpers.js";
+
+const scopedLearning: Learning = {
+  id: "11111111-1111-4111-8111-111111111111",
+  content: "Use AccountStore.",
+  scope: { organization: "acme", repo: "acme/accounts" },
+  category: "correction",
+  status: "active",
+  source: { agent: "claude" },
+  confidence: 1,
+  confirmation: "explicit",
+  fingerprint: "a".repeat(64),
+  supersedesMemoryId: null,
+  createdAt: "2026-08-18T12:00:00.000Z",
+  updatedAt: "2026-08-18T12:00:00.000Z",
+  suppressedAt: null,
+  deletedAt: null,
+};
 
 describe("live agent session command builders", () => {
   it("builds persistent Claude start and resume commands without tools", () => {
@@ -92,9 +114,75 @@ describe("live agent session command builders", () => {
       }),
     ).toThrow("cannot be ephemeral");
   });
+
+  it("builds machine-readable OpenCode start and resume commands", () => {
+    expect(
+      buildOpenCodeRunArgs({
+        prompt: "initial teaching",
+        model: "anthropic/claude-haiku",
+        title: "Lore acceptance",
+      }),
+    ).toEqual([
+      "run",
+      "--format",
+      "json",
+      "--model",
+      "anthropic/claude-haiku",
+      "--title",
+      "Lore acceptance",
+      "initial teaching",
+    ]);
+    expect(
+      buildOpenCodeRunArgs({
+        prompt: "later correction",
+        model: "anthropic/claude-haiku",
+        sessionId: "ses_acceptance",
+      }),
+    ).toEqual([
+      "run",
+      "--format",
+      "json",
+      "--model",
+      "anthropic/claude-haiku",
+      "--session",
+      "ses_acceptance",
+      "later correction",
+    ]);
+    expect(() =>
+      buildOpenCodeRunArgs({
+        prompt: "invalid",
+        model: "anthropic/claude-haiku",
+        sessionId: "ses_acceptance",
+        title: "Cannot retitle",
+      }),
+    ).toThrow("cannot set a new title");
+    expect(() =>
+      buildOpenCodeRunArgs({
+        prompt: "invalid",
+        model: "missing-provider",
+      }),
+    ).toThrow("provider/model");
+  });
 });
 
 describe("live agent output parsers", () => {
+  it("requires native acceptance learnings to keep repository scope", () => {
+    expect(() =>
+      assertRepositoryScoped(
+        scopedLearning,
+        "acme/accounts",
+        "native capture",
+      ),
+    ).not.toThrow();
+    expect(() =>
+      assertRepositoryScoped(
+        { ...scopedLearning, scope: { organization: "acme" } },
+        "acme/accounts",
+        "native capture",
+      ),
+    ).toThrow("repository scope");
+  });
+
   it("parses bounded integer cost controls", () => {
     expect(boundedInteger({}, "MAX_ACU", 2, 1, 10)).toBe(2);
     expect(
@@ -165,5 +253,57 @@ describe("live agent output parsers", () => {
       parseDevinCliResult(JSON.stringify(base), "prompt"),
     ).toThrow("invalid result");
     expect(() => parseDevinCliResult("{", "start")).toThrow("invalid JSON");
+  });
+
+  it("parses one completed OpenCode JSONL session, text, and cost", () => {
+    const output = [
+      '{"type":"step_start","timestamp":1,"sessionID":"ses_acceptance","part":{"type":"step-start"}}',
+      '{"type":"text","timestamp":2,"sessionID":"ses_acceptance","part":{"type":"text","text":"first line"}}',
+      '{"type":"text","timestamp":3,"sessionID":"ses_acceptance","part":{"type":"text","text":"second line"}}',
+      '{"type":"step_finish","timestamp":4,"sessionID":"ses_acceptance","part":{"type":"step-finish","cost":0.0125}}',
+    ].join("\n");
+
+    expect(parseOpenCodeRunJsonl(output)).toEqual({
+      sessionId: "ses_acceptance",
+      text: "first line\nsecond line",
+      costUsd: 0.0125,
+      completedSteps: 1,
+    });
+    expect(() => parseOpenCodeRunJsonl("not-json")).toThrow("invalid JSON");
+    expect(() =>
+      parseOpenCodeRunJsonl(
+        [
+          '{"type":"text","sessionID":"ses_one","part":{"type":"text","text":"one"}}',
+          '{"type":"step_finish","sessionID":"ses_two","part":{"type":"step-finish","cost":0}}',
+        ].join("\n"),
+      ),
+    ).toThrow("multiple session IDs");
+    expect(() =>
+      parseOpenCodeRunJsonl(
+        '{"type":"text","sessionID":"ses_one","part":{"type":"text","text":"unfinished"}}',
+      ),
+    ).toThrow("completed step");
+  });
+
+  it("requires the OpenCode noninteractive and cleanup capabilities", () => {
+    const supported = {
+      rootHelp: "Commands:\n  opencode run [message..]",
+      runHelp:
+        "Options:\n  --format default|json\n  --session session id to continue",
+      sessionDeleteHelp: "opencode session delete <sessionID>",
+    };
+    expect(() => assertOpenCodeCliCapabilities(supported)).not.toThrow();
+    expect(() =>
+      assertOpenCodeCliCapabilities({
+        ...supported,
+        runHelp: "Options:\n  --format default",
+      }),
+    ).toThrow("JSON event output");
+    expect(() =>
+      assertOpenCodeCliCapabilities({
+        ...supported,
+        sessionDeleteHelp: "opencode session list",
+      }),
+    ).toThrow("session cleanup");
   });
 });

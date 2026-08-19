@@ -457,6 +457,7 @@ export class PostgresPilotRepository {
     const rows = await this.#db
       .select({
         workspaceId: workspaces.id,
+        workspaceName: workspaces.name,
         organization: workspaces.organization,
         tokenId: workspaceTokens.id,
       })

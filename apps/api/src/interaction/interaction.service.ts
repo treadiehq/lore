@@ -5,6 +5,7 @@ import {
   ObservationResponseSchema,
   SharedMemoryEngine,
   TurnObservationSchema,
+  isNativeCodingAgent,
   redactUnknown,
   type AuthenticatedWorkspace,
   type AgentInteraction,
@@ -138,30 +139,30 @@ export class InteractionService {
         }
       }
 
+      const learningScope = {
+        ...sanitized.scope,
+        ...sanitized.learningScope,
+        organization: workspace.organization,
+      };
       const interaction = AgentInteractionSchema.parse({
         agent: sanitized.agent,
         workspaceId: workspace.workspaceId,
         eventId: recorded.event.id,
-        scope: {
-          ...sanitized.learningScope,
-          organization: workspace.organization,
-        },
+        scope: learningScope,
         sessionId: sanitized.sessionId,
         messages: sanitized.messages,
       });
-      const nativeLearningWithoutRepository =
-        sanitized.connector === "lore-cli" &&
-        (sanitized.agent === "claude" || sanitized.agent === "codex") &&
-        sanitized.learningScope.repo === undefined;
-      const observed = nativeLearningWithoutRepository
-        ? {
-            memories: [],
-            created: 0,
-            duplicates: 0,
-            reconciled: 0,
-            superseded: 0,
-          }
-        : await this.#engine.observe(interaction);
+      const observed =
+        isNativeCodingAgent(sanitized.agent) &&
+        learningScope.repo === undefined
+          ? {
+              memories: [],
+              created: 0,
+              duplicates: 0,
+              reconciled: 0,
+              superseded: 0,
+            }
+          : await this.#engine.observe(interaction);
       await this.#indexer.indexMemories(observed.memories);
 
       const userMessages = sanitized.messages.filter(
