@@ -56,9 +56,9 @@ const RULES: readonly RedactionRule[] = [
   {
     kind: "credential",
     pattern:
-      /\b(api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|passwd|secret)\b(\s*[:=]\s*)(["']?)([^\s,"'};]{8,})\3/giu,
-    replacement: (_match, name, separator, quote) =>
-      `${name}${separator}${quote}[REDACTED:CREDENTIAL]${quote}`,
+      /(["']?)\b(api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|passwd|secret)\b\1(\s*[:=]\s*)(["']?)([^\s,"'};]{8,})\4/giu,
+    replacement: (_match, keyQuote, name, separator, valueQuote) =>
+      `${keyQuote}${name}${keyQuote}${separator}${valueQuote}[REDACTED:CREDENTIAL]${valueQuote}`,
   },
 ];
 

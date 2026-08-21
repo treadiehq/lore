@@ -27,7 +27,7 @@ declare const __LORE_STANDALONE__: boolean | undefined;
 const RUNTIME_VERSION =
   typeof __LORE_VERSION__ === "string" && __LORE_VERSION__ !== ""
     ? __LORE_VERSION__
-    : "0.1.4";
+    : "0.1.5";
 const IS_STANDALONE_RUNTIME =
   typeof __LORE_STANDALONE__ === "boolean" && __LORE_STANDALONE__;
 
@@ -218,8 +218,8 @@ export function redactSecrets(text: string): string {
     )
     .replace(/\bAKIA[A-Z0-9]{16}\b/gu, "[REDACTED_AWS_KEY]")
     .replace(
-      /((?:api[_-]?key|access[_-]?token|auth[_-]?token|password|passwd|secret)\s*[:=]\s*)(["']?)[^\s"',;]{8,}\2/giu,
-      "$1[REDACTED]",
+      /((["']?)\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|password|passwd|secret)\b\2\s*[:=]\s*)(["']?)[^\s"',;]{8,}\3/giu,
+      "$1$3[REDACTED]$3",
     )
     .replace(
       /(authorization\s*:\s*bearer\s+)[A-Za-z0-9._~+/=-]{8,}/giu,

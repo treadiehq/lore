@@ -943,7 +943,7 @@ describe.skipIf(!databaseTestsEnabled)(
       expect(contextBody.packing.includedMemoryIds).not.toHaveLength(0);
       expect(contextBody.event.type).toBe("context_delivery");
       expect(contextBody.receipt.querySha256).toMatch(/^[a-f0-9]{64}$/u);
-      expect(contextBody.receipt.retrievalPolicyVersion).toBe("precision-v2");
+      expect(contextBody.receipt.retrievalPolicyVersion).toBe("precision-v3");
       expect(contextBody.receipt.hits[0]?.content).toContain("AccountStore");
 
       const activity = await fetch(`${baseUrl}/v1/activity`, {

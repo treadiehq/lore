@@ -14,7 +14,7 @@ import {
 } from "@lore-co/core";
 export * from "./context-packing.js";
 
-export const RETRIEVAL_POLICY_VERSION = "precision-v2";
+export const RETRIEVAL_POLICY_VERSION = "precision-v3";
 
 const STOP_WORDS = new Set([
   "a",
@@ -35,6 +35,10 @@ const STOP_WORDS = new Set([
   "it",
   "service",
   "services",
+  "src",
+  "source",
+  "file",
+  "files",
   "handler",
   "handlers",
   "of",
@@ -52,6 +56,10 @@ const STOP_WORDS = new Set([
   "where",
   "which",
   "with",
+  "js",
+  "jsx",
+  "ts",
+  "tsx",
 ]);
 
 function words(value: string): string[] {

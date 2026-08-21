@@ -88,7 +88,8 @@ export interface DemoResult {
   fixtureDirectory: string | null;
   checks: {
     correctionCaptured: true;
-    pathScoped: true;
+    repositoryScoped: true;
+    relevantFileMatched: true;
     relevantReceipt: true;
     codexFollowedRule: true;
     irrelevantPromptSilent: true;
@@ -244,20 +245,20 @@ async function git(
 
 async function waitForLearning(
   client: LoreClient,
-  marker: string,
+  expectedContent: string,
   repository: string,
   timeoutMs: number,
 ): Promise<Learning> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const response = await client.listLearnings({
-      query: marker,
+      query: expectedContent,
       repo: repository,
       status: "active",
       limit: 20,
     });
     const learning = response.memories.find((memory) =>
-      memory.content.includes(marker),
+      memory.content.includes(expectedContent),
     );
     if (learning !== undefined) {
       return learning;
@@ -283,20 +284,53 @@ function activityTask(activity: ActivityItem): string {
   return request.task.task;
 }
 
+function activityRepository(activity: ActivityItem): string {
+  const request = activity.event.payload.request;
+  if (
+    typeof request !== "object" ||
+    request === null ||
+    !("task" in request) ||
+    typeof request.task !== "object" ||
+    request.task === null
+  ) {
+    return "";
+  }
+  if ("repo" in request.task && typeof request.task.repo === "string") {
+    return request.task.repo;
+  }
+  if (
+    "scope" in request.task &&
+    typeof request.task.scope === "object" &&
+    request.task.scope !== null &&
+    "repo" in request.task.scope &&
+    typeof request.task.scope.repo === "string"
+  ) {
+    return request.task.scope.repo;
+  }
+  return "";
+}
+
 async function waitForDelivery(
   client: LoreClient,
-  marker: string,
-  timeoutMs: number,
+  input: {
+    task: string;
+    repository: string;
+    from: string;
+    timeoutMs: number;
+  },
 ): Promise<ActivityItem> {
-  const deadline = Date.now() + timeoutMs;
+  const deadline = Date.now() + input.timeoutMs;
   while (Date.now() < deadline) {
     const response = await client.listActivity({
       type: "context_delivery",
       agent: "codex",
+      from: input.from,
       limit: 50,
     });
-    const activity = response.activities.find((item) =>
-      activityTask(item).includes(marker),
+    const activity = response.activities.find(
+      (item) =>
+        activityTask(item) === input.task &&
+        activityRepository(item) === input.repository,
     );
     if (activity !== undefined) {
       return activity;
@@ -305,6 +339,16 @@ async function waitForDelivery(
   }
   throw new Error("Codex delivery receipt was not recorded before the timeout");
 }
+
+export const DEMO_SCENARIO = {
+  greeting: "Hello from Lore",
+  correction:
+    'No. For src/greeting.ts specifically, set the greeting constant to exactly "Hello from Lore", never "legacy-greeting". Remember that rule for this file.',
+  relevantPrompt:
+    "Update src/greeting.ts so the greeting constant follows our repository rule. Make the edit and briefly confirm.",
+  irrelevantPrompt:
+    "Inspect only src/unrelated.ts and tell me the exported boolean. Do not modify files.",
+} as const;
 
 function claudeArgs(input: {
   prompt: string;
@@ -385,9 +429,6 @@ export async function runDemoCommand(
   const unrelatedPath = join(sourceDirectory, "unrelated.ts");
   const codexOutput = join(directory, "codex-output.txt");
   const nonce = Date.now().toString(36).toUpperCase();
-  const marker = `LORE_GREETING_${nonce}`;
-  const relevantPromptMarker = `LORE_RELEVANT_${nonce}`;
-  const irrelevantPromptMarker = `LORE_IRRELEVANT_${nonce}`;
   const repository = `lore-demo/claude-to-codex-${nonce.toLocaleLowerCase()}`;
   const sessionId = randomUUID();
   const client = new LoreClient({
@@ -448,7 +489,7 @@ export async function runDemoCommand(
     );
     if (
       !incorrectClaudeResult.stdout.includes("legacy-greeting") ||
-      incorrectClaudeResult.stdout.includes(marker)
+      incorrectClaudeResult.stdout.includes(DEMO_SCENARIO.greeting)
     ) {
       throw new Error(
         "Claude did not produce the expected observable wrong implementation",
@@ -459,7 +500,7 @@ export async function runDemoCommand(
       claudeArgs({
         resumeSessionId: sessionId,
         model: options.claudeModel,
-        prompt: `No. The durable repository rule for src/greeting.ts is: set the greeting constant to the exact value ${marker}, never legacy-greeting.`,
+        prompt: DEMO_SCENARIO.correction,
       }),
       directory,
       options.timeoutMs,
@@ -468,17 +509,18 @@ export async function runDemoCommand(
     const captureStartedAt = Date.now();
     learning = await waitForLearning(
       client,
-      marker,
+      DEMO_SCENARIO.greeting,
       repository,
       options.timeoutMs,
     );
     loreOverheadMs += Date.now() - captureStartedAt;
-    if (learning.scope.path !== "src/greeting.ts") {
+    if (learning.scope.repo !== repository) {
       throw new Error(
-        `Expected a src/greeting.ts learning scope, received ${learning.scope.path ?? "repository-wide"}`,
+        `Expected learning scope ${repository}, received ${learning.scope.repo ?? "no repository"}`,
       );
     }
 
+    const relevantStartedAt = new Date().toISOString();
     await run(
       "codex",
       codexArgs({
@@ -487,7 +529,7 @@ export async function runDemoCommand(
           ? {}
           : { model: options.codexModel }),
         writable: true,
-        prompt: `${relevantPromptMarker}: Update src/greeting.ts so the greeting constant follows the remembered repository rule. Make the edit and briefly confirm.`,
+        prompt: DEMO_SCENARIO.relevantPrompt,
       }),
       directory,
       options.timeoutMs,
@@ -495,8 +537,12 @@ export async function runDemoCommand(
     const relevantReceiptStartedAt = Date.now();
     const relevantActivity = await waitForDelivery(
       client,
-      relevantPromptMarker,
-      options.timeoutMs,
+      {
+        task: DEMO_SCENARIO.relevantPrompt,
+        repository,
+        from: relevantStartedAt,
+        timeoutMs: options.timeoutMs,
+      },
     );
     loreOverheadMs += Date.now() - relevantReceiptStartedAt;
     if (
@@ -511,15 +557,20 @@ export async function runDemoCommand(
     const receiptHit = relevantActivity.receipt.hits[0];
     if (
       receiptHit?.memoryId !== learning.id ||
-      !receiptHit.content.includes(marker) ||
-      !receiptHit.reasons.includes("path")
+      !receiptHit.content.includes(DEMO_SCENARIO.greeting) ||
+      !receiptHit.reasons.includes("repository") ||
+      !receiptHit.reasons.includes("lexical") ||
+      !receiptHit.matchedTerms.includes("greeting")
     ) {
       throw new Error(
         "The relevant Codex receipt did not preserve exact match evidence",
       );
     }
     const target = await readFile(targetPath, "utf8");
-    if (!target.includes(marker) || target.includes("legacy-greeting")) {
+    if (
+      !target.includes(DEMO_SCENARIO.greeting) ||
+      target.includes("legacy-greeting")
+    ) {
       throw new Error("Codex received the turn but did not apply the learned rule");
     }
 
@@ -534,6 +585,7 @@ export async function runDemoCommand(
       "export const unrelated = false;\n",
       "utf8",
     );
+    const irrelevantStartedAt = new Date().toISOString();
     await run(
       "codex",
       codexArgs({
@@ -542,7 +594,7 @@ export async function runDemoCommand(
           ? {}
           : { model: options.codexModel }),
         writable: false,
-        prompt: `${irrelevantPromptMarker}: Inspect only src/unrelated.ts and state its exported boolean. Do not modify files.`,
+        prompt: DEMO_SCENARIO.irrelevantPrompt,
       }),
       directory,
       options.timeoutMs,
@@ -550,8 +602,12 @@ export async function runDemoCommand(
     const irrelevantReceiptStartedAt = Date.now();
     const irrelevantActivity = await waitForDelivery(
       client,
-      irrelevantPromptMarker,
-      options.timeoutMs,
+      {
+        task: DEMO_SCENARIO.irrelevantPrompt,
+        repository,
+        from: irrelevantStartedAt,
+        timeoutMs: options.timeoutMs,
+      },
     );
     loreOverheadMs += Date.now() - irrelevantReceiptStartedAt;
     if (
@@ -571,7 +627,8 @@ export async function runDemoCommand(
       fixtureDirectory: options.keep ? directory : null,
       checks: {
         correctionCaptured: true,
-        pathScoped: true,
+        repositoryScoped: true,
+        relevantFileMatched: true,
         relevantReceipt: true,
         codexFollowedRule: true,
         irrelevantPromptSilent: true,

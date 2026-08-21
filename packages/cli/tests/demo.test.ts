@@ -1,7 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { isolateLoreClaudeHooks } from "../src/demo.js";
+import { DEMO_SCENARIO, isolateLoreClaudeHooks } from "../src/demo.js";
 
 describe("Claude-to-Codex demo", () => {
+  it("uses the same natural language a customer would use", () => {
+    expect(DEMO_SCENARIO).toEqual({
+      greeting: "Hello from Lore",
+      correction:
+        'No. For src/greeting.ts specifically, set the greeting constant to exactly "Hello from Lore", never "legacy-greeting". Remember that rule for this file.',
+      relevantPrompt:
+        "Update src/greeting.ts so the greeting constant follows our repository rule. Make the edit and briefly confirm.",
+      irrelevantPrompt:
+        "Inspect only src/unrelated.ts and tell me the exported boolean. Do not modify files.",
+    });
+    expect(JSON.stringify(DEMO_SCENARIO)).not.toMatch(/\bLORE_[A-Z0-9_-]+\b/u);
+  });
+
   it("loads only Lore hooks into the isolated Claude fixture", () => {
     const loreHook = {
       type: "command",

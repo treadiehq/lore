@@ -235,12 +235,37 @@ test("creates a linked correction and displays complete inspection lineage", asy
 test("filters and paginates event-aware activity", async ({ page }) => {
   await page.goto("/activity");
 
-  const delivery = page
+  const sharedInteraction = page
     .locator("article")
-    .filter({ hasText: "Context delivery" })
-    .first();
-  await expect(delivery).toContainText("Context delivery request");
-  await expect(delivery).not.toContainText("Human correction");
+    .filter({
+      hasText:
+        "Update src/accounts/service.ts using the remembered account storage rule.",
+    });
+  await expect(sharedInteraction).toHaveCount(1);
+  await expect(sharedInteraction).toContainText("Memory shared");
+  await expect(sharedInteraction).toContainText("1 memory shared");
+  await expect(sharedInteraction).toContainText("What you asked");
+  await expect(sharedInteraction).toContainText("What Lore shared");
+  await expect(
+    sharedInteraction.getByRole("link", { name: "See why this was shared" }),
+  ).toBeVisible();
+  await expect(sharedInteraction).not.toContainText("Context delivery");
+  await expect(sharedInteraction).not.toContainText("Observed user message");
+
+  const legacyDemoInteraction = page
+    .locator("article")
+    .filter({
+      hasText:
+        "Update src/legacy.ts using the remembered repository rule.",
+    });
+  await expect(legacyDemoInteraction).toHaveCount(1);
+  await expect(
+    legacyDemoInteraction.getByText(
+      "Update src/legacy.ts using the remembered repository rule.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect(legacyDemoInteraction).toContainText("Automated check");
 
   await page.getByLabel("Event type").selectOption("observation");
   await page.getByLabel("Agent").fill("codex");
@@ -254,8 +279,8 @@ test("filters and paginates event-aware activity", async ({ page }) => {
   await expect(page).toHaveURL(/connector=lore-cli/u);
   await expect(page).toHaveURL(/from=/u);
   await expect(page).toHaveURL(/to=/u);
-  await expect(page.getByText("Observed user message").first()).toBeVisible();
-  await expect(page.getByText("Human correction")).toHaveCount(0);
+  await expect(page.getByText("What you asked").first()).toBeVisible();
+  await expect(page.getByText("What you corrected")).toHaveCount(0);
 
   await page.getByRole("button", { name: "Reset" }).click();
   await page.getByRole("button", { name: "Next" }).click();

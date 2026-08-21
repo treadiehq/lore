@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "kind": "railway-dashboard-template-source-of-truth",
-  "canonicalVersion": "0.1.4",
+  "canonicalVersion": "0.1.5",
   "metadata": {
     "name": "Lore",
     "description": "One-click self-hosting for Lore with pgvector, the Lore API, and the Lore web dashboard.",
@@ -78,7 +78,7 @@
       "name": "api",
       "source": {
         "type": "docker-image",
-        "image": "ghcr.io/treadiehq/lore-api:0.1.4",
+        "image": "ghcr.io/treadiehq/lore-api:0.1.5",
         "canonical": true,
         "provenance": ".github/workflows/container-images.yml target api"
       },
@@ -123,7 +123,7 @@
           "description": "Reference to the pgvector service's private connection URL."
         },
         "LORE_SERVER_VERSION": {
-          "value": "0.1.4",
+          "value": "0.1.5",
           "description": "Version reported by the pinned API image."
         },
         "LORE_WORKSPACE_TOKEN": {
@@ -162,7 +162,7 @@
       "name": "web",
       "source": {
         "type": "docker-image",
-        "image": "ghcr.io/treadiehq/lore-web:0.1.4",
+        "image": "ghcr.io/treadiehq/lore-web:0.1.5",
         "canonical": true,
         "provenance": ".github/workflows/container-images.yml target web"
       },

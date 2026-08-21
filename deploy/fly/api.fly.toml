@@ -2,7 +2,7 @@
 # deploy/fly/deploy.sh sets deployment-specific origins and workspace metadata.
 
 [build]
-  image = "ghcr.io/treadiehq/lore-api:0.1.4"
+  image = "ghcr.io/treadiehq/lore-api:0.1.5"
 
 [deploy]
   release_command = "node node_modules/@lore-co/database/dist/migrate.js"

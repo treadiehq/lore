@@ -136,7 +136,7 @@ describe("native hook configuration", () => {
                 workspaceName: "Test",
                 organization: "test",
                 credentialType: "workspace_token",
-                server: { version: "0.1.4", revision: null },
+                server: { version: "0.1.5", revision: null },
               }
             : { status: "ok", check: "readiness" },
         ),

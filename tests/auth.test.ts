@@ -79,7 +79,7 @@ describe("passwordless auth contracts", () => {
       credentialType: "session" as const,
       role: "owner" as const,
       server: {
-        version: "0.1.4",
+        version: "0.1.5",
         revision: "0123456789abcdef",
       },
     };

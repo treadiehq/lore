@@ -13,6 +13,28 @@ describe("redaction", () => {
     expect(result.redacted).toBe(true);
   });
 
+  it("redacts credentials with quoted JSON keys", () => {
+    const content =
+      'Use this config: {"password": "super-secret-value", "client_secret": "another-secret-value"}';
+    const result = redactSensitiveText(content);
+
+    expect(result.text).toBe(
+      'Use this config: {"password": "[REDACTED:CREDENTIAL]", "client_secret": "[REDACTED:CREDENTIAL]"}',
+    );
+    expect(result.redacted).toBe(true);
+    expect(result.findings).toEqual([{ kind: "credential", count: 2 }]);
+
+    expect(redactUnknown({ currentUser: { content } })).toMatchObject({
+      value: {
+        currentUser: {
+          content:
+            'Use this config: {"password": "[REDACTED:CREDENTIAL]", "client_secret": "[REDACTED:CREDENTIAL]"}',
+        },
+      },
+      redacted: true,
+    });
+  });
+
   it("redacts values under sensitive object keys", () => {
     const result = redactUnknown({
       apiKey: "generic-value-that-does-not-match-a-provider-prefix",

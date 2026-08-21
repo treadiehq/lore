@@ -143,7 +143,7 @@ describe("self-host lifecycle", () => {
       "--api-port",
       String(test.apiPort),
       "--image-tag",
-      "0.1.4",
+      "0.1.5",
       "--organization",
       "acme",
       "--name",

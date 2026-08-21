@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-DEFAULT_IMAGE_TAG="0.1.4"
+DEFAULT_IMAGE_TAG="0.1.5"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 API_CONFIG="${SCRIPT_DIR}/api.fly.toml"
 WEB_CONFIG="${SCRIPT_DIR}/web.fly.toml"
@@ -31,7 +31,7 @@ Required flags:
   --region <code>              Three-letter Fly region code
 
 Options:
-  --image-tag <semver>         Pinned canonical image tag (default: 0.1.4)
+  --image-tag <semver>         Pinned canonical image tag (default: 0.1.5)
   --api-origin <origin>        Public API origin
                                (default: https://<api-app>.fly.dev)
   --web-origin <origin>        Public dashboard origin
@@ -220,7 +220,7 @@ APP_PATTERN='^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$'
 [[ "$REGION" =~ ^[a-z]{3}$ ]] ||
   die "--region must be a three-letter lowercase Fly region code"
 [[ "$IMAGE_TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]] ||
-  die "--image-tag must be a pinned semantic version such as 0.1.4"
+  die "--image-tag must be a pinned semantic version such as 0.1.5"
 
 require_one_line "--fly-org" "$FLY_ORG"
 require_one_line "--workspace-organization" "$WORKSPACE_ORGANIZATION"

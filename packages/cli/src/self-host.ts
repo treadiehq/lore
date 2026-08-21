@@ -129,7 +129,7 @@ Environment:
 Examples:
   lore self-host up
   lore self-host up --headless --api-port 3101 --json
-  lore self-host up --image-tag 0.1.4 --origin https://lore.example.com
+  lore self-host up --image-tag 0.1.5 --origin https://lore.example.com
 `;
 
 export const SELF_HOST_DOWN_HELP = `lore self-host down
@@ -484,7 +484,7 @@ function normalizeImageTag(value: string): string {
     !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$/u.test(tag)
   ) {
     throw new Error(
-      "--image-tag must be a pinned semantic version such as 0.1.4",
+      "--image-tag must be a pinned semantic version such as 0.1.5",
     );
   }
   return tag;

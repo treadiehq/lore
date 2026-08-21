@@ -1,6 +1,6 @@
 {
   "name": "@lore-co/adapter-generic",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Host-controlled adapter for auditable Lore agent integrations",
   "type": "module",
   "main": "./dist/index.js",

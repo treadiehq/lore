@@ -3,7 +3,7 @@
 # override both URL values with the real API app name.
 
 [build]
-  image = "ghcr.io/treadiehq/lore-web:0.1.4"
+  image = "ghcr.io/treadiehq/lore-web:0.1.5"
 
 [env]
   HOST = "0.0.0.0"

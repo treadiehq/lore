@@ -1,6 +1,6 @@
 {
   "name": "@lore-co/cli",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Connect Claude Code, Codex, and OpenCode to Lore shared engineering memory",
   "type": "module",
   "main": "./dist/index.js",

@@ -7,6 +7,10 @@ definePageMeta({ middleware: "auth" });
 useHead({ title: "Activity" });
 
 type EventType = ConnectorEvent["type"];
+type DisplayActivity = ActivityItem & {
+  displayId: string;
+  sourceActivities: readonly ActivityItem[];
+};
 const eventTypes: EventType[] = [
   "paired_turn",
   "observation",
@@ -130,6 +134,110 @@ const {
   { watch: [listInput] },
 );
 
+function displayActivity(activity: ActivityItem): DisplayActivity {
+  return {
+    ...activity,
+    displayId: activity.event.id,
+    sourceActivities: [activity],
+  };
+}
+
+function interactionText(activity: ActivityItem): string {
+  return activity.event.type === "context_delivery"
+    ? contextDeliveryTask(activity)
+    : activity.correction;
+}
+
+function interactionKey(activity: ActivityItem): string {
+  return [
+    activity.event.agent,
+    activity.event.sessionId,
+    normalizedContent(interactionText(activity)),
+  ].join("\0");
+}
+
+function uniqueMemories(
+  memories: ReadonlyArray<ActivityItem["learnedMemories"][number]>,
+): ActivityItem["learnedMemories"] {
+  return [
+    ...new Map(memories.map((memory) => [memory.id, memory] as const)).values(),
+  ];
+}
+
+function mergeInteraction(
+  activities: readonly ActivityItem[],
+): DisplayActivity {
+  const primary =
+    activities.find((activity) => activity.event.type === "context_delivery") ??
+    activities[0]!;
+  const observation = activities.find(
+    (activity) => activity.event.type === "observation",
+  );
+  return {
+    ...primary,
+    displayId: activities.map((activity) => activity.event.id).join(":"),
+    sourceActivities: activities,
+    correction: observation?.correction || primary.correction,
+    learnedMemories: uniqueMemories(
+      activities.flatMap((activity) => activity.learnedMemories),
+    ),
+    deliveredMemories: uniqueMemories(
+      activities.flatMap((activity) => activity.deliveredMemories),
+    ),
+    receipt:
+      activities.find((activity) => activity.receipt !== null)?.receipt ?? null,
+  };
+}
+
+const displayActivities = computed<DisplayActivity[]>(() => {
+  const activities = response.value?.activities ?? [];
+  if (routeEventType(route.query.type) !== "") {
+    return activities.map(displayActivity);
+  }
+
+  const grouped: DisplayActivity[] = [];
+  for (const activity of activities) {
+    const canPair =
+      activity.event.type === "context_delivery" ||
+      activity.event.type === "observation";
+    const key = interactionKey(activity);
+    const receivedAt = Date.parse(activity.event.receivedAt);
+    const matchIndex = canPair
+      ? grouped.findIndex((candidate) => {
+          if (interactionKey(candidate) !== key) {
+            return false;
+          }
+          const candidateTypes = new Set(
+            candidate.sourceActivities.map((source) => source.event.type),
+          );
+          return (
+            !candidateTypes.has(activity.event.type) &&
+            Math.abs(
+              Date.parse(candidate.event.receivedAt) - receivedAt,
+            ) <= 120_000
+          );
+        })
+      : -1;
+    if (matchIndex === -1) {
+      grouped.push(displayActivity(activity));
+      continue;
+    }
+    grouped[matchIndex] = mergeInteraction([
+      ...grouped[matchIndex]!.sourceActivities,
+      activity,
+    ]);
+  }
+
+  return grouped.filter(
+    (activity) =>
+      activity.sourceActivities.some(
+        (source) => source.event.type !== "observation",
+      ) ||
+      activity.learnedMemories.length > 0 ||
+      activity.deliveredMemories.length > 0,
+  );
+});
+
 const hasActiveFilters = computed(
   () =>
     routeEventType(route.query.type) !== "" ||
@@ -202,16 +310,26 @@ async function reloadActivity(): Promise<void> {
 }
 
 const acceptanceMarkerPattern =
-  /\bLORE_(?:INJECTED|CAPTURED)_[A-Z0-9_-]+\b/giu;
+  /\bLORE_(?:INJECTED|CAPTURED|GREETING|RELEVANT|IRRELEVANT)_[A-Z0-9_-]+\b/giu;
 
 function containsAcceptanceMarker(value: string): boolean {
   acceptanceMarkerPattern.lastIndex = 0;
   return acceptanceMarkerPattern.test(value);
 }
 
+function customerFacingAcceptanceText(value: string): string {
+  return value
+    .replace(
+      /^\s*LORE_(?:RELEVANT|IRRELEVANT)_[A-Z0-9_-]+\s*:\s*/iu,
+      "",
+    )
+    .replace(/\bLORE_GREETING_[A-Z0-9_-]+\b/giu, '"Hello from Lore"');
+}
+
 function isAcceptanceTestActivity(activity: ActivityItem): boolean {
   return (
     containsAcceptanceMarker(activity.correction) ||
+    containsAcceptanceMarker(contextDeliveryTask(activity)) ||
     activity.learnedMemories.some((memory) =>
       containsAcceptanceMarker(memory.content),
     ) ||
@@ -252,10 +370,16 @@ function contextDeliveryTask(activity: ActivityItem): string {
 
 function activityMessage(activity: ActivityItem): string {
   if (activity.event.type === "context_delivery") {
-    return contextDeliveryTask(activity);
+    return cleanSentence(
+      customerFacingAcceptanceText(contextDeliveryTask(activity)),
+    );
   }
   if (!isAcceptanceTestActivity(activity)) {
     return activity.correction || "No retained user message.";
+  }
+  const customerFacing = customerFacingAcceptanceText(activity.correction);
+  if (customerFacing !== activity.correction) {
+    return cleanSentence(customerFacing);
   }
   const capturedRule =
     /\bLORE_CAPTURED_[A-Z0-9_-]+\s*:\s*([\s\S]+)$/iu.exec(
@@ -271,19 +395,31 @@ function activityMessageLabel(activity: ActivityItem): string {
   if (activity.event.type === "paired_turn") {
     return isAcceptanceTestActivity(activity)
       ? "Test correction"
-      : "Human correction";
+      : "What you corrected";
   }
-  return activity.event.type === "observation"
-    ? "Observed user message"
-    : "Context delivery request";
+  return "What you asked";
 }
 
 function eventTypeLabel(type: EventType): string {
   return {
-    paired_turn: "Paired turn",
-    observation: "Observation",
-    context_delivery: "Context delivery",
+    paired_turn: "Correction",
+    observation: "Observed activity",
+    context_delivery: "Memory check",
   }[type];
+}
+
+function activityTypeLabel(activity: ActivityItem): string {
+  if (activity.deliveredMemories.length > 0) {
+    return "Memory shared";
+  }
+  if (activity.learnedMemories.length > 0) {
+    return "Memory learned";
+  }
+  return activity.event.type === "context_delivery"
+    ? "Memory checked"
+    : activity.event.type === "observation"
+      ? "Activity observed"
+      : "Correction handled";
 }
 
 function humanReadableMemory(
@@ -293,8 +429,11 @@ function humanReadableMemory(
   if (!containsAcceptanceMarker(memory.content)) {
     return memory.content;
   }
+  if (/\bLORE_GREETING_[A-Z0-9_-]+\b/iu.test(memory.content)) {
+    return cleanSentence(customerFacingAcceptanceText(memory.content));
+  }
   if (/\bLORE_INJECTED_[A-Z0-9_-]+\b/iu.test(memory.content)) {
-    return `Lore successfully delivered a previously stored test learning to ${capitalize(activity.event.agent)}.`;
+    return `Lore successfully shared a previously stored test learning with ${capitalize(activity.event.agent)}.`;
   }
   const capturedRule =
     /\bLORE_CAPTURED_[A-Z0-9_-]+\s*:\s*([\s\S]+)$/iu.exec(memory.content)?.[1];
@@ -373,34 +512,42 @@ function activityOutcome(activity: ActivityItem): string {
     const proposed = proposedMemories(activity).length;
     const activated = activatedMemories(activity).length;
     if (proposed > 0 && activated > 0) {
-      return `${proposed} proposed · ${activated} activated`;
+      return `${proposed} to review · ${activated} saved`;
     }
     if (proposed > 0) {
-      return `${proposed} proposed`;
+      return `${proposed} to review`;
     }
-    return activated === 0 ? "Observed" : `${activated} activated`;
+    return activated === 0 ? "Observed" : `${activated} saved`;
   }
   if (activity.event.type === "context_delivery") {
     const count = activity.deliveredMemories.length;
-    return count === 0 ? "No matching learning" : `${count} delivered`;
+    return count === 0
+      ? "No relevant memory"
+      : `${count} ${count === 1 ? "memory" : "memories"} shared`;
   }
   if (activity.receipt === null) {
-    return "No delivery receipt";
+    return "No sharing record";
   }
   if (activity.deliveredMemories.length === 0) {
     const proposed = proposedMemories(activity).length;
-    return proposed === 0 ? "No matching memory" : `${proposed} proposed`;
+    return proposed === 0 ? "No relevant memory" : `${proposed} to review`;
   }
   if (isAcceptanceTestActivity(activity)) {
-    return "Injection verified";
+    return "Sharing verified";
   }
   const otherCount = otherAppliedMemories(activity).length;
   if (otherCount === 0 && primaryMessageWasApplied(activity)) {
-    return "Captured and injected";
+    return "Saved and shared";
   }
   return `${otherCount} other ${
     otherCount === 1 ? "learning" : "learnings"
-  } injected`;
+  } shared`;
+}
+
+function receiptLinkLabel(activity: ActivityItem): string {
+  return activity.deliveredMemories.length > 0
+    ? "See why this was shared"
+    : "See memory check details";
 }
 
 function capitalize(value: string): string {
@@ -419,8 +566,7 @@ function capitalize(value: string): string {
           Activity
         </h1>
         <p class="lore-page-description mt-1.5">
-          Review what connected tools observed, what became active or proposed,
-          and what was injected into later work.
+          See what Lore remembered, what it shared with your agents, and why.
         </p>
       </div>
       <button
@@ -537,12 +683,20 @@ function capitalize(value: string): string {
       </UiStatePanel>
 
       <UiStatePanel
-        v-else-if="response?.activities.length === 0"
-        :title="hasActiveFilters ? 'No matching activity' : 'No activity yet'"
+        v-else-if="displayActivities.length === 0"
+        :title="
+          hasActiveFilters
+            ? 'No matching activity'
+            : response?.activities.length
+              ? 'Nothing needed your attention'
+              : 'No activity yet'
+        "
         :description="
           hasActiveFilters
             ? 'Adjust or reset the filters to see more events.'
-            : 'Once a connected agent observes a message or receives a learning, you’ll see the event here.'
+            : response?.activities.length
+              ? 'Lore stayed quiet because these interactions did not save or share any memory.'
+              : 'Once Lore remembers or shares something, you’ll see it here.'
         "
         :icon="hasActiveFilters ? 'search' : 'activity'"
       >
@@ -560,16 +714,16 @@ function capitalize(value: string): string {
       >
         <div class="flex items-center justify-between border-b border-lore-border px-4 py-3 sm:px-5">
           <p class="text-xs font-medium text-lore-text-secondary">
-            Recent events
+            Recent activity
           </p>
           <p class="text-xs tabular-nums text-lore-text-muted">
-            {{ response?.total ?? 0 }} total
+            {{ displayActivities.length }} shown
           </p>
         </div>
 
         <article
-          v-for="activity in response?.activities"
-          :key="activity.event.id"
+          v-for="activity in displayActivities"
+          :key="activity.displayId"
           class="relative border-b border-lore-border px-4 py-4 last:border-b-0 sm:px-5 sm:py-5"
         >
           <div class="grid gap-4 lg:grid-cols-[10rem_minmax(0,1fr)]">
@@ -603,22 +757,22 @@ function capitalize(value: string): string {
                   v-if="proposedMemories(activity).length > 0"
                   class="rounded-md border border-lore-accent/30 bg-lore-accent-soft px-2 py-0.5 text-xs font-medium text-lore-accent"
                 >
-                  {{ proposedMemories(activity).length }} proposed
+                  {{ proposedMemories(activity).length }} to review
                 </span>
                 <span
                   v-if="activatedMemories(activity).length > 0"
                   class="rounded-md border border-lore-success/30 bg-lore-success-soft px-2 py-0.5 text-xs font-medium text-lore-success"
                 >
-                  {{ activatedMemories(activity).length }} activated
+                  {{ activatedMemories(activity).length }} saved
                 </span>
                 <span class="px-0.5 py-0.5 text-xs font-medium text-lore-text-muted">
-                  {{ eventTypeLabel(activity.event.type) }}
+                  {{ activityTypeLabel(activity) }}
                 </span>
                 <span
                   v-if="isAcceptanceTestActivity(activity)"
                   class="px-0.5 py-0.5 text-xs font-medium text-lore-text-muted"
                 >
-                  Acceptance test
+                  Automated check
                 </span>
                 <span
                   class="rounded-md border px-2 py-0.5 text-xs font-medium"
@@ -653,7 +807,7 @@ function capitalize(value: string): string {
                     v-if="activity.event.type === 'paired_turn' && primaryMessageWasApplied(activity)"
                     class="rounded border border-lore-success/30 bg-lore-success-soft px-1.5 py-0.5 text-[0.625rem] font-medium text-lore-success"
                   >
-                    Injected
+                    Shared
                   </span>
                 </div>
                 <p class="mt-2 whitespace-pre-wrap text-sm leading-6 text-lore-text">
@@ -671,11 +825,7 @@ function capitalize(value: string): string {
                 <section v-if="capturedLearningDetails(activity).length > 0">
                   <div class="flex items-center justify-between gap-3">
                     <h2 class="lore-section-label">
-                      {{
-                        capturedLearningDetails(activity).length === 1
-                          ? "Captured memory"
-                          : "Captured memories"
-                      }}
+                      What Lore remembered
                     </h2>
                     <span class="text-xs tabular-nums text-lore-text-muted">
                       {{ capturedLearningDetails(activity).length }}
@@ -703,7 +853,7 @@ function capitalize(value: string): string {
                       {{
                         isAcceptanceTestActivity(activity)
                           ? "Validation result"
-                          : "Other learnings injected"
+                          : "What Lore shared"
                       }}
                     </h2>
                     <span class="text-xs tabular-nums text-lore-text-muted">
@@ -731,7 +881,7 @@ function capitalize(value: string): string {
                 :to="`/receipts/${activity.receipt.id}`"
                 class="lore-link mt-4 inline-block text-xs"
               >
-                View exact injection receipt
+                {{ receiptLinkLabel(activity) }}
               </NuxtLink>
 
               <details class="mt-4">
@@ -748,9 +898,15 @@ function capitalize(value: string): string {
                     </dd>
                   </div>
                   <div>
-                    <dt class="text-lore-text-muted">Event</dt>
+                    <dt class="text-lore-text-muted">
+                      {{ activity.sourceActivities.length === 1 ? "Event" : "Events grouped" }}
+                    </dt>
                     <dd class="mt-1 break-all font-mono text-lore-text-secondary">
-                      {{ activity.event.id }}
+                      {{
+                        activity.sourceActivities.length === 1
+                          ? activity.event.id
+                          : activity.sourceActivities.length
+                      }}
                     </dd>
                   </div>
                   <div v-if="activity.receipt">

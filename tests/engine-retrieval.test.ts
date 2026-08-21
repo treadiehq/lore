@@ -198,6 +198,38 @@ describe("ScopedKeywordMemoryRetriever", () => {
     },
   );
 
+  it("does not treat generic source paths and extensions as file relevance", async () => {
+    const { engine } = createEngineHarness();
+    const remembered = await engine.remember({
+      content:
+        'For src/greeting.ts specifically, set the greeting constant to exactly "Hello from Lore", never "legacy-greeting". Remember that rule for this file.',
+      scope: { organization: "acme", repo: "demo" },
+      category: "correction",
+      source,
+    });
+
+    const unrelated = await engine.getContext({
+      agent: "codex",
+      organization: "acme",
+      repo: "demo",
+      task: "Inspect only src/unrelated.ts and tell me the exported boolean.",
+      files: ["src/unrelated.ts"],
+    });
+    expect(unrelated.memories).toEqual([]);
+
+    const relevant = await engine.getContext({
+      agent: "codex",
+      organization: "acme",
+      repo: "demo",
+      task: "Update src/greeting.ts using the remembered greeting rule.",
+      files: ["src/greeting.ts"],
+    });
+    expect(relevant.memories.map((memory) => memory.id)).toEqual([
+      remembered.memory.id,
+    ]);
+    expect(relevant.hits?.[0]?.matchedTerms).toContain("greeting");
+  });
+
   it("enforces scope and active status while ranking task, diff, and symbol evidence", async () => {
     const { engine, repository } = createEngineHarness();
     const remember = async (

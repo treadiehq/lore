@@ -23,11 +23,10 @@ import type {
   WorkspaceHttpRequest,
   WorkspaceHttpResponse,
 } from "./request-context.js";
+import { FixedWindowRateLimiter } from "./fixed-window-rate-limiter.js";
 
-interface RateWindow {
-  startedAt: number;
-  count: number;
-}
+const RATE_WINDOW_MS = 60_000;
+const MAX_RATE_WINDOWS = 10_000;
 
 function firstHeader(
   headers: WorkspaceHttpRequest["headers"],
@@ -56,8 +55,11 @@ export class WorkspaceAuthGuard implements CanActivate {
   readonly #pilotRepository: PostgresPilotRepository;
   readonly #authRepository: PostgresAuthRepository;
   readonly #reflector: Reflector;
-  readonly #limit = rateLimitPerMinute();
-  readonly #rateWindows = new Map<string, RateWindow>();
+  readonly #rateLimiter = new FixedWindowRateLimiter({
+    limit: rateLimitPerMinute(),
+    windowMs: RATE_WINDOW_MS,
+    maxKeys: MAX_RATE_WINDOWS,
+  });
 
   constructor(
     @Inject(PILOT_REPOSITORY) pilotRepository: PostgresPilotRepository,
@@ -135,22 +137,16 @@ export class WorkspaceAuthGuard implements CanActivate {
   }
 
   #checkRateLimit(tokenId: string): void {
-    const now = Date.now();
-    const current = this.#rateWindows.get(tokenId);
-    if (current === undefined || now - current.startedAt >= 60_000) {
-      this.#rateWindows.set(tokenId, { startedAt: now, count: 1 });
+    if (this.#rateLimiter.allow(tokenId)) {
       return;
     }
-    current.count += 1;
-    if (current.count > this.#limit) {
-      throw new HttpException(
-        {
-          statusCode: HttpStatus.TOO_MANY_REQUESTS,
-          error: "Too Many Requests",
-          message: "Workspace request rate exceeded",
-        },
-        HttpStatus.TOO_MANY_REQUESTS,
-      );
-    }
+    throw new HttpException(
+      {
+        statusCode: HttpStatus.TOO_MANY_REQUESTS,
+        error: "Too Many Requests",
+        message: "Workspace request rate exceeded",
+      },
+      HttpStatus.TOO_MANY_REQUESTS,
+    );
   }
 }

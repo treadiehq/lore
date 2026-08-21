@@ -49,7 +49,7 @@ async function localLoreUrl(
                   organization: "test",
                   credentialType: "workspace_token",
                   server: {
-                    version: options.serverVersion ?? "0.1.4",
+                    version: options.serverVersion ?? "0.1.5",
                     revision: null,
                   },
                 }

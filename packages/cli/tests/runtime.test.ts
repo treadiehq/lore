@@ -529,4 +529,14 @@ describe("native hook runtime", () => {
       "Authorization: Bearer [REDACTED] [REDACTED_GITHUB_TOKEN]",
     );
   });
+
+  it("redacts credentials with quoted JSON keys", () => {
+    expect(
+      redactSecrets(
+        'Use this config: {"password": "super-secret-value", "api_key": "another-secret-value"}',
+      ),
+    ).toBe(
+      'Use this config: {"password": "[REDACTED]", "api_key": "[REDACTED]"}',
+    );
+  });
 });

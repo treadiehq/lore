@@ -1,6 +1,6 @@
 {
   "name": "@lore-co/opencode",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Fail-open Lore memory integration for OpenCode",
   "type": "module",
   "main": "./dist/index.js",

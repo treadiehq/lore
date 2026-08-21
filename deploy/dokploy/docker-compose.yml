@@ -20,7 +20,7 @@ services:
     restart: unless-stopped
 
   migrate:
-    image: ghcr.io/treadiehq/lore-api:0.1.4
+    image: ghcr.io/treadiehq/lore-api:0.1.5
     command:
       - node
       - node_modules/@lore-co/database/dist/migrate.js
@@ -32,7 +32,7 @@ services:
     restart: "no"
 
   api:
-    image: ghcr.io/treadiehq/lore-api:0.1.4
+    image: ghcr.io/treadiehq/lore-api:0.1.5
     environment:
       NODE_ENV: production
       DATABASE_URL: postgresql://lore:${POSTGRES_PASSWORD}@postgres:5432/lore
@@ -41,7 +41,7 @@ services:
       API_JSON_BODY_LIMIT: ${API_JSON_BODY_LIMIT:-1mb}
       API_RATE_LIMIT_PER_MINUTE: ${API_RATE_LIMIT_PER_MINUTE:-120}
       NUXT_ORIGIN: ${WEB_ORIGIN}
-      LORE_SERVER_VERSION: 0.1.4
+      LORE_SERVER_VERSION: 0.1.5
       LORE_SERVER_REVISION: ${LORE_SERVER_REVISION:-}
       LORE_WORKSPACE_TOKEN: ${LORE_WORKSPACE_TOKEN}
       LORE_WORKSPACE_ORGANIZATION: ${LORE_WORKSPACE_ORGANIZATION:-local}
@@ -97,7 +97,7 @@ services:
     restart: unless-stopped
 
   web:
-    image: ghcr.io/treadiehq/lore-web:0.1.4
+    image: ghcr.io/treadiehq/lore-web:0.1.5
     environment:
       HOST: 0.0.0.0
       PORT: "3000"

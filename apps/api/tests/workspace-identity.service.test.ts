@@ -7,7 +7,7 @@ afterEach(() => {
 
 describe("WorkspaceIdentityService", () => {
   it("returns safe identity fields for a workspace token", () => {
-    vi.stubEnv("LORE_SERVER_VERSION", "0.1.4");
+    vi.stubEnv("LORE_SERVER_VERSION", "0.1.5");
     vi.stubEnv("LORE_SERVER_REVISION", "revision-123");
 
     expect(
@@ -24,14 +24,14 @@ describe("WorkspaceIdentityService", () => {
       organization: "acme",
       credentialType: "workspace_token",
       server: {
-        version: "0.1.4",
+        version: "0.1.5",
         revision: "revision-123",
       },
     });
   });
 
   it("includes role for sessions without exposing user or token fields", () => {
-    vi.stubEnv("LORE_SERVER_VERSION", "0.1.4");
+    vi.stubEnv("LORE_SERVER_VERSION", "0.1.5");
 
     const identity = new WorkspaceIdentityService().get({
       workspaceId: "22222222-2222-4222-8222-222222222222",

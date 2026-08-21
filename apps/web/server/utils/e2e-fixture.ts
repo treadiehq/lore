@@ -20,6 +20,10 @@ const replacementId = "00000000-0000-4000-8000-000000000003";
 const proposalId = "00000000-0000-4000-8000-000000000004";
 const proposalConflictId = "66666666-6666-4666-8666-666666666666";
 const now = "2026-08-13T12:00:00.000Z";
+const sharedActivityPrompt =
+  "Update src/accounts/service.ts using the remembered account storage rule.";
+const legacyDemoPrompt =
+  "LORE_RELEVANT_FIXTURE: Update src/legacy.ts using the remembered repository rule.";
 
 function memory(input: {
   id: string;
@@ -132,17 +136,26 @@ function connectorEvent(index = 0) {
   const type = (
     ["paired_turn", "observation", "context_delivery"] as const
   )[index % 3]!;
+  const groupedInteraction = [1, 2, 4, 5].includes(index);
   const occurredAt = new Date(
     Date.parse("2026-08-13T12:00:00.000Z") - index * 60_000,
   ).toISOString();
   return {
     id: `10000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
     workspaceId,
-    connector: index % 2 === 0 ? "lore-cli" : "devin",
+    connector: groupedInteraction
+      ? "lore-cli"
+      : index % 2 === 0
+        ? "lore-cli"
+        : "devin",
     externalEventId: `fixture-event-${index + 1}`,
     type,
-    agent: index % 2 === 0 ? "codex" : "claude",
-    sessionId: `fixture-session-${index + 1}`,
+    agent: groupedInteraction ? "codex" : index % 2 === 0 ? "codex" : "claude",
+    sessionId: groupedInteraction
+      ? index <= 2
+        ? "fixture-shared-interaction"
+        : "fixture-legacy-demo-interaction"
+      : `fixture-session-${index + 1}`,
     conversationId: null,
     payload:
       type === "context_delivery"
@@ -150,7 +163,12 @@ function connectorEvent(index = 0) {
             request: {
               task: {
                 agent: index % 2 === 0 ? "codex" : "claude",
-                task: `Deliver context for fixture task ${index + 1}.`,
+                task:
+                  index === 2
+                    ? sharedActivityPrompt
+                    : index === 5
+                      ? legacyDemoPrompt
+                    : `Deliver context for fixture task ${index + 1}.`,
               },
             },
           }
@@ -184,7 +202,11 @@ function initialActivities() {
         event.type === "paired_turn"
           ? `Human correction for paired turn ${index + 1}.`
           : event.type === "observation"
-            ? `Observed user context ${index + 1}.`
+            ? index === 1
+              ? sharedActivityPrompt
+              : index === 4
+                ? legacyDemoPrompt
+              : `Observed user context ${index + 1}.`
             : "",
       learnedMemories: learned,
       deliveredMemories: delivered,

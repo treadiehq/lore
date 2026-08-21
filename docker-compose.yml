@@ -1,7 +1,7 @@
 name: lore
 
-x-api-image: &api-image "${LORE_API_IMAGE:-ghcr.io/treadiehq/lore-api}:${LORE_IMAGE_TAG:-0.1.4}"
-x-web-image: &web-image "${LORE_WEB_IMAGE:-ghcr.io/treadiehq/lore-web}:${LORE_IMAGE_TAG:-0.1.4}"
+x-api-image: &api-image "${LORE_API_IMAGE:-ghcr.io/treadiehq/lore-api}:${LORE_IMAGE_TAG:-0.1.5}"
+x-web-image: &web-image "${LORE_WEB_IMAGE:-ghcr.io/treadiehq/lore-web}:${LORE_IMAGE_TAG:-0.1.5}"
 
 services:
   postgres:
@@ -46,7 +46,7 @@ services:
       API_JSON_BODY_LIMIT: ${API_JSON_BODY_LIMIT:-1mb}
       API_RATE_LIMIT_PER_MINUTE: ${API_RATE_LIMIT_PER_MINUTE:-120}
       NUXT_ORIGIN: ${NUXT_ORIGIN:-}
-      LORE_SERVER_VERSION: ${LORE_IMAGE_TAG:-0.1.4}
+      LORE_SERVER_VERSION: ${LORE_IMAGE_TAG:-0.1.5}
       LORE_SERVER_REVISION: ${LORE_SERVER_REVISION:-}
       LORE_WORKSPACE_TOKEN: ${LORE_WORKSPACE_TOKEN:-}
       LORE_WORKSPACE_ORGANIZATION: ${LORE_WORKSPACE_ORGANIZATION:-}

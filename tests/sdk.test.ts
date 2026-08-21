@@ -57,7 +57,7 @@ describe("SharedMemoryClient requests", () => {
       workspaceName: "Acme Engineering",
       organization: "acme",
       credentialType: "workspace_token" as const,
-      server: { version: "0.1.4", revision: null },
+      server: { version: "0.1.5", revision: null },
     };
     const client = new LoreClient({
       baseUrl: "http://lore.test/",

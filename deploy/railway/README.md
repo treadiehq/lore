@@ -14,10 +14,10 @@ template. Apply it exactly in Railway's template composer:
 
 - `pgvector` uses `pgvector/pgvector:0.8.6-pg18`, private TCP port `5432`, and a
   persistent volume mounted at `/var/lib/postgresql`.
-- `api` uses `ghcr.io/treadiehq/lore-api:0.1.4`, runs the compiled migration
+- `api` uses `ghcr.io/treadiehq/lore-api:0.1.5`, runs the compiled migration
   `node node_modules/@lore-co/database/dist/migrate.js` before deploy, exposes
   target port `3001`, and checks `/health/ready`.
-- `web` uses `ghcr.io/treadiehq/lore-web:0.1.4`, exposes target port `3000`, and
+- `web` uses `ghcr.io/treadiehq/lore-web:0.1.5`, exposes target port `3000`, and
   checks `/health`.
 - Only `api` and `web` receive Railway-generated public domains. All
   service-to-service traffic uses Railway reference variables and private

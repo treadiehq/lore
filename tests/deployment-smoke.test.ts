@@ -39,7 +39,7 @@ async function fixture(): Promise<{
           workspaceName: "Smoke",
           organization: "smoke",
           credentialType: "workspace_token",
-          server: { version: "0.1.4", revision: "fixture" },
+          server: { version: "0.1.5", revision: "fixture" },
         }),
       );
       return;
@@ -112,7 +112,7 @@ describe("deployment smoke script", () => {
         "--api-url",
         origin,
         "--expected-version",
-        "0.1.4",
+        "0.1.5",
         "--expected-revision",
         "fixture",
         "--json",
@@ -124,7 +124,7 @@ describe("deployment smoke script", () => {
 
     expect(JSON.parse(result.stdout)).toMatchObject({
       status: "ok",
-      server: { version: "0.1.4", revision: "fixture" },
+      server: { version: "0.1.5", revision: "fixture" },
       checks: [
         "api_liveness",
         "api_readiness",
